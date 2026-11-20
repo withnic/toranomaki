@@ -76,8 +76,8 @@ def test_hex_plan_adds_and_fixes_without_removing() -> None:
 
 
 def test_hex_plan_skips_terms_declined_for_hex() -> None:
-    # 反映を断られた語（hex: false）は送らず、差分にも出さない（次の sync で再び勧めない）
-    declined = [Term("setup-uv", ("セットアップユーブイ",), hex=False, pin=True)]
+    # 反映を断られた語（sync: false）は送らず、差分にも出さない（次の sync で再び勧めない）
+    declined = [Term("setup-uv", ("セットアップユーブイ",), sync=False, pin=True)]
     change = plan_hex(declined, hex_settings(), Path("hex.com"), FakeRun())
     assert change.empty
     assert not change.summary

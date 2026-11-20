@@ -14,7 +14,7 @@
         pin: true                    # Hex の認識寄せで優先する（vocabulary の先頭に並べる）
       - term: "setup-uv"
         aliases: ["セットアップユーブイ"]
-        hex: false                   # Hex には送らない（反映を断られた語。sync が再び勧めない）
+        sync: false                  # sync で書き出さない（反映を断られた語。sync が再び勧めない）
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from typing import Any
 import yaml
 
 DEFAULT_GLOSSARY = Path.home() / ".claude" / "voice-glossary.yaml"
-_KEYS = {"term", "aliases", "context_only", "note", "pin", "hex"}
+_KEYS = {"term", "aliases", "context_only", "note", "pin", "sync"}
 
 
 class GlossaryError(ValueError):
@@ -42,8 +42,8 @@ class Term:
     # Hex の認識寄せの枠（先頭から 500 文字）で優先する。
     # toranomaki sync が vocabulary の先頭へ並べ替える
     pin: bool = False
-    # false = Hex には送らない（反映するか聞いて断られた語。次の sync で再び勧めないため）
-    hex: bool = True
+    # false = sync で書き出さない（反映するか聞いて断られた語。次の sync で再び勧めないため）
+    sync: bool = True
 
 
 def parse_term(item: Any, where: str) -> Term:
@@ -63,7 +63,7 @@ def parse_term(item: Any, where: str) -> Term:
         context_only=bool(item.get("context_only", False)),
         note=str(item.get("note") or "").strip(),
         pin=bool(item.get("pin", False)),
-        hex=bool(item.get("hex", True)),
+        sync=bool(item.get("sync", True)),
     )
 
 
