@@ -8,6 +8,7 @@
   pin: true の語は vocabulary の先頭へ並べ替える
 
 context_only の語（「扶養」→「不要」など一般語と衝突するもの）は、どちらにも入れない。
+hex: false の語（反映するか聞いて断られた語）も送らない。差分にも出さないので、再び勧めない。
 既存の項目は消さず、追加と修正だけを行う（並べ替え・復元は事前にバックアップする）。
 
 自分で作るツールは、この辞書を直接読めばよい（書き出さない）。
@@ -77,6 +78,7 @@ def plan_hex(
     backup_dir: Path = DEFAULT_BACKUP_DIR,
 ) -> Change:
     change = Change("Hex")
+    terms = [t for t in terms if t.hex]
     mode = dict(settings["dictation_processing"]["default_mode"])
     existing = [dict(r) for r in mode.get("replacements") or []]
     by_phrase = {r.get("matched_phrase"): r for r in existing}

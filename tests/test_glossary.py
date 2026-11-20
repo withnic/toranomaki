@@ -22,6 +22,7 @@ def test_parse_full_entry() -> None:
         ("Kubernetes", Term("Kubernetes")),
         ({"term": " Go ", "aliases": "ゴー"}, Term("Go", ("ゴー",))),
         ({"term": "A", "aliases": ["", " b "]}, Term("A", ("b",))),
+        ({"term": "A", "aliases": "b", "hex": False}, Term("A", ("b",), hex=False)),
     ],
 )
 def test_parse_shorthand(item, expected) -> None:
