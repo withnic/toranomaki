@@ -1,6 +1,17 @@
 version: 2
 updates:
+  # 月 1 回、種類ごとに 1 つの PR にまとめる（CI が通ればマージするだけ）
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      python:
+        patterns: ["*"]
