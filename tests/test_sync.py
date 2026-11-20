@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+from toranomaki.glossary import Term
+from toranomaki.sync import main, plan_hex, replacement_pairs
+
+TERMS = [
+    Term("prompts", ("プロンプツ",)),
+    Term("不要", ("扶養",), context_only=True),
+    Term("Cloud Spanner", ("クラウドスパナー", "スパナー")),
+    Term("ローカル LLM", ("LL, MA",), context_only=True),
+]
+
+
+class FakeRun:
+    def __init__(self, code: int = 0) -> None:
+        self.calls: list[tuple[list[str], str | None]] = []
+        self.code = code
+
+    def __call__(self, args, stdin):
+        self.calls.append((list(args), stdin))
+        return subprocess.CompletedProcess(args, self.code, "", "err" if self.code else "")
+
+
+def hex_settings(replacements=(), vocabulary=()):
+    return {
+        "dictation_processing": {
+            "default_mode": {"name": "Global", "replacements": list(replacements), "modes": []}
+        },
+        "vocabulary": list(vocabulary),
+    }
+
+
+def test_replacement_pairs_skip_context_only_and_sort_longest_first() -> None:
+    assert replacement_pairs(TERMS) == [
+        ("クラウドスパナー", "Cloud Spanner"),
+        ("プロンプツ", "prompts"),
+        ("スパナー", "Cloud Spanner"),
+    ]
+
+
+def test_hex_plan_adds_and_fixes_without_removing() -> None:
+    run = FakeRun()
+    settings = hex_settings(
+        replacements=[
+            {"matched_phrase": "えーと", "output": ""},  # 手で入れた項目は残す
+            {"matched_phrase": "プロンプツ", "output": "promts"},  # 間違いは直す
+        ],
+        vocabulary=[{"term": "Cloud Spanner", "sounds_like": ["クラウドスパナー"]}],
+    )
+    change = plan_hex(TERMS, settings, Path("hex.com"), run)
+    for action in change.actions:
+        action()
+
+    args, stdin = run.calls[0]
+    assert args[1:] == ["settings", "apply", "-"]
+    mode = json.loads(stdin)["dictation_processing.default_mode"]
+    phrases = {r["matched_phrase"]: r["output"] for r in mode["replacements"]}
+    assert phrases == {
+        "えーと": "",
+        "プロンプツ": "prompts",
+        "クラウドスパナー": "Cloud Spanner",
+        "スパナー": "Cloud Spanner",
+    }
+    assert "扶養" not in phrases  # context_only は置き換えに入れない
+    assert mode["name"] == "Global"  # 他の項目はそのまま
+
+    vocab_calls = [a[1:] for a, _ in run.calls[1:]]
+    assert ["vocabulary", "add", "prompts", "--sounds-like", "プロンプツ"] in vocab_calls
+    assert ["vocabulary", "add", "Cloud Spanner", "--sounds-like", "スパナー"] in vocab_calls
+    # context_only（一般語と衝突する読み替え）は認識寄せにも入れない
+    assert all(c[2] not in ("不要", "ローカル LLM") for c in vocab_calls)
+
+
+def test_hex_plan_is_empty_when_in_sync() -> None:
+    settings = hex_settings(
+        replacements=[{"matched_phrase": a, "output": t} for a, t in replacement_pairs(TERMS)],
+        vocabulary=[
+            {"term": t.term, "sounds_like": list(t.aliases)} for t in TERMS if not t.context_only
+        ],
+    )
+    assert plan_hex(TERMS, settings, Path("hex.com"), FakeRun()).empty
+
+
+def test_cli_apply_reports_hex_failure(tmp_path: Path) -> None:
+    glossary = tmp_path / "g.yaml"
+    glossary.write_text('terms:\n  - term: "prompts"\n    aliases: ["プロンプツ"]\n', "utf-8")
+    (tmp_path / "settings.json").write_text(json.dumps(hex_settings()), encoding="utf-8")
+    argv = ["--glossary", str(glossary), "--hex-dir", str(tmp_path), "--apply"]
+    assert main(argv, run=FakeRun(code=3)) == 1
+
+
+def test_hex_vocabulary_skips_spellings_with_commas() -> None:
+    run = FakeRun()
+    change = plan_hex([Term("A B", ("x, y", "z"))], hex_settings(), Path("hex.com"), run)
+    for action in change.actions:
+        action()
+    assert run.calls[-1][0][1:] == ["vocabulary", "add", "A B", "--sounds-like", "z"]
+
+
+def _glossary(tmp_path: Path) -> Path:
+    path = tmp_path / "g.yaml"
+    path.write_text('terms:\n  - term: "prompts"\n    aliases: ["プロンプツ"]\n', "utf-8")
+    return path
+
+
+def test_cli_dry_run_writes_nothing(tmp_path: Path, capsys) -> None:
+    hex_dir = tmp_path / "hex"
+    hex_dir.mkdir()
+    (hex_dir / "settings.json").write_text(json.dumps(hex_settings()), encoding="utf-8")
+    run = FakeRun()
+    assert main(["--glossary", str(_glossary(tmp_path)), "--hex-dir", str(hex_dir)], run=run) == 0
+    assert run.calls == []
+    out = capsys.readouterr().out
+    assert "replacements 追加: プロンプツ → prompts" in out and "dry-run" in out
+
+
+def test_missing_hex_is_skipped(tmp_path: Path, capsys) -> None:
+    argv = ["--glossary", str(_glossary(tmp_path)), "--hex-dir", str(tmp_path / "no-hex")]
+    assert main(argv, run=FakeRun()) == 0
+    assert "skip: Hex" in capsys.readouterr().out
+
+
+def test_toranomaki_cli_runs_sync(tmp_path: Path, capsys) -> None:
+    from toranomaki.main import main as toranomaki_main
+
+    argv = ["sync", "--glossary", str(_glossary(tmp_path)), "--hex-dir", str(tmp_path / "no-hex")]
+    assert toranomaki_main(argv) == 0
+    assert "glossary:" in capsys.readouterr().out
