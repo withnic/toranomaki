@@ -1,5 +1,8 @@
 # Toranomaki
 
+[![CI](https://github.com/withnic/toranomaki/actions/workflows/ci.yml/badge.svg)](https://github.com/withnic/toranomaki/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Claude が育てる共通の音声辞書（`~/.claude/voice-glossary.yaml`）の形式を決め、Hex へ橋渡しします。
 録音や音声認識は持ちません（Hex に任せます）。
 
