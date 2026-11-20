@@ -3,6 +3,12 @@
 [![CI](https://github.com/withnic/toranomaki/actions/workflows/ci.yml/badge.svg)](https://github.com/withnic/toranomaki/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+> **English summary**: Toranomaki keeps a voice-input glossary that Claude Code grows by itself.
+> When Claude reads your dictated instructions and spots a misrecognition, it records the fix in
+> `~/.claude/voice-glossary.yaml`; `toranomaki sync` then pushes those fixes to
+> [Hex](https://github.com/anomalyco/hex) as replacements and vocabulary.
+> It is built for Japanese dictation, and the docs and templates are in Japanese.
+
 Claude が育てる共通の音声辞書（`~/.claude/voice-glossary.yaml`）の形式を決め、Hex へ橋渡しします。
 録音や音声認識は持ちません（Hex に任せます）。
 
