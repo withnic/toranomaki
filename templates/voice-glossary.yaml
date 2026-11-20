@@ -4,7 +4,6 @@
 #   aliases:      実際に出てきた誤認識
 #   context_only: true = 一般語と衝突するので機械的に置き換えない（Claude だけが文脈で読み替える）
 #   note:         どういう文脈でそう読み替えたか
-#   sync:         false = sync で書き出さない（反映するか聞いて断られた語。sync が再び勧めない）
 terms:
   - term: "Claude Code"
     aliases: ["クロードコード"]
