@@ -249,13 +249,15 @@ def backup_hex_vocabulary(
     return path
 
 
-def prune_backups(backup_dir: Path, keep: int = KEEP_BACKUPS) -> list[Path]:
+def prune_backups(
+    backup_dir: Path, keep: int = KEEP_BACKUPS, *, pattern: str = f"{BACKUP_PREFIX}*.json"
+) -> list[Path]:
     """新しい順に keep 個だけ残し、それより古いバックアップを消す。
 
     対象は toranomaki が作った hex-vocabulary-*.json だけ。ファイル名の日時で並べる
     （更新日時はコピーなどで変わるため使わない）。
     """
-    backups = sorted(backup_dir.glob(f"{BACKUP_PREFIX}*.json"), key=lambda p: p.name)
+    backups = sorted(backup_dir.glob(pattern), key=lambda p: p.name)
     old = backups[: max(len(backups) - max(keep, 1), 0)]
     for path in old:
         path.unlink()

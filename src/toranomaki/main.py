@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from toranomaki import sync
+from toranomaki import merge, sync
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -18,6 +18,9 @@ def main(argv: list[str] | None = None) -> int:
         prog="toranomaki", description="Toranomaki: 共通の音声辞書を Hex へ配る"
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    merge.add_arguments(
+        commands.add_parser("merge", help="merge YAML or Markdown into the glossary")
+    )
     sync.add_arguments(
         commands.add_parser(
             "sync",
@@ -31,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     args = parser.parse_args(argv)
+    if args.command == "merge":
+        return merge.execute(args)
     if args.command == "sync":
         return sync.execute(args)
     if args.command == "hex-restore":

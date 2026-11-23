@@ -99,6 +99,34 @@ uv run toranomaki sync --apply   # 反映する
 - Hex は起動している必要があります（公式 CLI の `hex settings apply` と `hex vocabulary add` で書き込みます）。
 - Hex の Labs で `vocabulary-biasing` をオンにすると、登録語が音声認識に使われます（`hex labs on vocabulary-biasing`）。
 
+## Web 版 Gemini などで集めた訂正を取り込む
+
+音声認識の誤りを文脈から見つけられる AI は、辞書の「先生」になれます。Web 版 Gemini や ChatGPT などで個別に集めた訂正を `toranomaki merge` で共通辞書へ統合し、`sync` で Hex に還元できます。
+
+1. [Web 版 Gemini](https://gemini.google.com/) で Google Workspace 連携を有効にし、Google ドライブに `voice-glossary-gemini (Toranomaki)` というドキュメントを用意します。[辞書の雛形](templates/voice-glossary.yaml) に沿った YAML を、言語タグが `yaml` のコードブロックに置きます。
+2. Gemini の設定で「パーソナル インテリジェンス」→「Gemini への指示」を開き、[Gemini 用テンプレート](templates/GEMINI.voice.md) を貼り付けます。専用の会話にしたい場合は、Gem のカスタム指示と知識ファイルにも設定できます。
+3. 普段どおり音声で指示し、誤認識を読み替えたら辞書用ドキュメントの更新を Gemini に頼みます。共有文書などで確認が求められたら編集内容を確認し、直接編集できない場合は Gemini が出力した YAML をコピーします。[Gemini の Workspace 操作](https://support.google.com/gemini/answer/17094507)
+4. Google Docs から「ファイル → ダウンロード → Markdown（.md）」で保存するか、対象を選択して「Markdown としてコピー」を使います。[Google Docs の Markdown 機能](https://support.google.com/docs/answer/12014036)
+
+```powershell
+uv run toranomaki merge "$HOME/Downloads/voice-glossary-gemini.md"
+uv run toranomaki merge "$HOME/Downloads/voice-glossary-gemini.md" chatgpt.yaml --apply
+uv run toranomaki merge gemini.md --target ./custom-glossary.yaml
+```
+
+入力は YAML または `yaml` / `yml` コードブロックを含む Markdown です。複数入力は指定順に読み、`-` は標準入力を表します。既定のマージ先は `~/.toranomaki/voice-glossary.yaml` です。差分と衝突の警告を確認してから `--apply` を付けてもう一度実行してください。
+
+正本で `context_only: true` にした語は、取り込み元で設定を外してもそのままです。Hex への反映を再開するときは、正本側の指定も見直してください。
+
+| OS | クリップボードから差分を確認するコマンド |
+|---|---|
+| Windows PowerShell | `Get-Clipboard \| uv run toranomaki merge -` |
+| macOS | `pbpaste \| uv run toranomaki merge -` |
+| Linux（X11） | `xclip -o \| uv run toranomaki merge -` |
+| Linux（Wayland） | `wl-paste \| uv run toranomaki merge -` |
+
+変更を書き込むときは、既存の正本をバックアップします。Windows では `%LOCALAPPDATA%\toranomaki\backups\voice-glossary-*.yaml` に直近3世代を残します。Hex への反映は取り込み後に `uv run toranomaki sync` で確認し、`sync --apply` で実行します。
+
 ## 辞書の書き方
 
 ```yaml
