@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+from argparse import ArgumentParser
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -214,6 +217,68 @@ def test_missing_hex_is_skipped(tmp_path: Path, capsys) -> None:
     argv = ["--glossary", str(_glossary(tmp_path)), "--hex-dir", str(tmp_path / "no-hex")]
     assert main(argv, run=FakeRun()) == 0
     assert "skip: Hex" in capsys.readouterr().out
+
+
+def test_macos_defaults_and_cli_discovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sync_module, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("HEX_APPLICATION_SUPPORT_DIR", raising=False)
+    parser = ArgumentParser()
+    sync_module.add_arguments(parser)
+    default_dir = tmp_path / "Library" / "Application Support" / "hex"
+    assert parser.parse_args([]).hex_dir == default_dir
+    assert sync_module._default_backup_dir() == default_dir.with_name("toranomaki") / "backups"
+
+    custom_dir = tmp_path / "hex profile"
+    monkeypatch.setenv("HEX_APPLICATION_SUPPORT_DIR", str(custom_dir))
+    parser = ArgumentParser()
+    sync_module.add_restore_arguments(parser)
+    assert parser.parse_args(["backup.json"]).hex_dir == custom_dir
+
+    on_path = tmp_path / "bin" / "hex"
+    monkeypatch.setattr(sync_module.shutil, "which", lambda _: str(on_path))
+    assert sync_module._hex_executable(custom_dir, None) == on_path
+    monkeypatch.setattr(sync_module.shutil, "which", lambda _: None)
+    bundle = tmp_path / "Applications" / "Hex.app" / "Contents" / "MacOS" / "hex"
+    bundle.parent.mkdir(parents=True)
+    bundle.touch()
+    monkeypatch.setattr(Path, "is_file", lambda path: path == bundle)
+    assert sync_module._hex_executable(custom_dir, None) == bundle
+
+
+def test_macos_sync_and_restore_use_same_profile_as_hex_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sync_module, "sys", SimpleNamespace(platform="darwin", stderr=sys.stderr))
+    hex_dir = tmp_path / "custom hex config"
+    hex_dir.mkdir()
+    (hex_dir / "settings.json").write_text(json.dumps(hex_settings()), encoding="utf-8")
+    backup = tmp_path / "backup.json"
+    backup.write_text('{"entries":[]}', encoding="utf-8")
+    binary = tmp_path / "Hex App" / "hex"
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str], stdin: str | None, *, env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
+        assert args[0] == str(binary.resolve())
+        assert env["HEX_APPLICATION_SUPPORT_DIR"] == str(hex_dir.resolve())
+        calls.append(args[1:])
+        if args[1:3] == ["vocabulary", "list"]:
+            return subprocess.CompletedProcess(args, 0, '{"status":"vocabulary","entries":[]}', "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(sync_module, "_run", fake_run)
+    options = ["--hex-dir", str(hex_dir), "--hex-cli", str(binary), "--backup-dir", str(tmp_path)]
+    assert main(["--glossary", str(_glossary(tmp_path)), *options, "--apply"]) == 0
+    restore = ArgumentParser()
+    sync_module.add_restore_arguments(restore)
+    assert sync_module.execute_restore(restore.parse_args([str(backup), *options])) == 0
+    assert calls == [
+        ["settings", "apply", "-"],
+        ["vocabulary", "add", "--sounds-like", "プロンプツ", "--", "prompts"],
+        ["vocabulary", "list", "--json"],
+    ]
 
 
 def test_toranomaki_cli_runs_sync(tmp_path: Path, capsys) -> None:

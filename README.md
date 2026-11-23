@@ -50,7 +50,7 @@ Hex のような音声入力で Claude Code や Codex に指示すると、誤�
 
 [Git](https://git-scm.com/)、[uv](https://docs.astral.sh/uv/getting-started/installation/) を用意します。音声入力への反映には [Hex](https://github.com/anomalyco/hex) を使います。
 
-Hex への同期・復元と、設定画面からのアプリ一覧取得は Windows 向けです。YAML / Markdown の辞書取り込み（`merge`）は Hex なしで実行でき、Windows と Linux の CI でテストしています。
+Hex への同期・復元の CLI は Windows と macOS 向けです。ダブルクリック起動と設定画面でのアプリ一覧取得は Windows 向けです。YAML / Markdown の辞書取り込み（`merge`）は Hex なしで実行できます。
 
 ### Windows で初回セットアップ
 
@@ -84,6 +84,30 @@ if (-not (Test-Path "$HOME/.toranomaki/voice-glossary.yaml")) {
 既存ユーザーの場合、この手順で旧辞書を新しい場所へコピーします。続けて下の手順で音声入力の節を更新し、
 旧パスへの参照も差し替えてください。新しいセッションで辞書を読めることを確認したら、以後は新しいファイルに追記します。
 `sync` は新しいファイルがまだない間、旧パスを使います。`--glossary` で指定したパスは常に優先します。
+
+### macOS で CLI を使う
+
+Git、uv、macOS 版 Hex を用意します。ターミナルでリポジトリを取得して、辞書を初期化します。
+
+```sh
+git clone https://github.com/withnic/toranomaki.git
+cd toranomaki
+uv sync
+mkdir -p "$HOME/.toranomaki"
+if [ ! -e "$HOME/.toranomaki/voice-glossary.yaml" ]; then
+    if [ -f "$HOME/.claude/voice-glossary.yaml" ]; then
+        cp "$HOME/.claude/voice-glossary.yaml" "$HOME/.toranomaki/voice-glossary.yaml"
+    else
+        cp templates/voice-glossary.yaml "$HOME/.toranomaki/voice-glossary.yaml"
+    fi
+fi
+```
+
+Hex を起動してから `uv run toranomaki sync` で差分を確認し、`uv run toranomaki sync --apply` で反映します。復元も Windows と同じ `hex-restore` コマンドです。
+
+- Hex の設定は既定で `~/Library/Application Support/hex` から読み込みます。`HEX_APPLICATION_SUPPORT_DIR` を設定している場合はその値を使います。`--hex-dir` を指定すると、設定ファイルの読み取りと Hex CLI の接続先が同じディレクトリになります。
+- Hex CLI は PATH 上の `hex`、`/Applications/Hex.app`、`~/Applications/Hex.app` の順で探します。別の場所にある場合は、`sync` または `hex-restore` に `--hex-cli "/path/to/Hex.app/Contents/MacOS/hex"` を指定できます。[Hex の CLI 案内](https://github.com/anomalyco/hex#command-line)
+- Toranomaki のバックアップ先は `~/Library/Application Support/toranomaki/backups` です。
 
 ### 使うアシスタントに指示を入れる
 
@@ -143,7 +167,7 @@ terms:
 - モード名のリストは、そのモードでだけ置き換える指定です。空リストは文脈でだけ読み替える指定です。文字列の `global` は全アプリで置き換える指定です。個別指定のない別名には従来どおり `context_only` が効きます。
 - Hex に同名のモードがあれば、そのモードを更新します。すでに `Zed` というモードを使っているなら、例の `Programming` を `Zed` に読み替えてください。別名のモードが同じアプリを対象にしている場合は競合として中止します。
 - `toranomaki sync` で各モードの追加や解除を確認し、`--apply` で反映します。別名の適用先を明示すると、正本と同じ置き換えを共通設定や `hex_modes` に指定した以前のモードから解除できます。解除したい別名は、明示的に `[]` にしてください。変更前の音声入力設定はバックアップします。
-- Windows でアプリ別に切り替わるのは文字置き換えです。別名をアプリ限定や文脈限定にしたとき、Toranomaki が登録したものは共通 Vocabulary から外す差分に含めます。登録元が不明な別名は、「Hex と同期」の一覧で外すものを選び、「選択を差分に追加」を押してください。対象語とほかの別名は維持し、変更前の Vocabulary はバックアップします。
+- Toranomaki がアプリ別に配るのは文字置き換えです。別名をアプリ限定や文脈限定にしたとき、Toranomaki が登録したものは共通 Vocabulary から外す差分に含めます。登録元が不明な別名は、Windows の「Hex と同期」の一覧で外すものを選び、「選択を差分に追加」を押してください。対象語とほかの別名は維持し、変更前の Vocabulary はバックアップします。
 
 ## Web 版 Gemini などで集めた訂正を取り込む
 
@@ -258,6 +282,8 @@ Hex の vocabulary（認識寄せ）や、Whisper の hotwords に語を渡す�
 語が多いと、雑音を登録した語と聞き間違えやすくもなります。置き換え（replacements）に上限はありません。
 
 ## 開発
+
+GitHub Actions では Windows、Linux、macOS でテストします。同期と復元のテストは Hex CLI をフェイクに差し替えています。
 
 ```powershell
 uv run pytest -v

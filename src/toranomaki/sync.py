@@ -19,11 +19,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -38,9 +40,24 @@ from toranomaki.glossary import (
     load_glossary,
 )
 
-HEX_DIR = Path(os.environ.get("APPDATA", "")) / "hex"
+
+def _default_hex_dir() -> Path:
+    if sys.platform == "darwin":
+        override = os.environ.get("HEX_APPLICATION_SUPPORT_DIR")
+        if override:
+            return Path(override).expanduser()
+        return Path.home() / "Library" / "Application Support" / "hex"
+    return Path(os.environ.get("APPDATA", "")) / "hex"
+
+
+def _default_backup_dir() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "toranomaki" / "backups"
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "toranomaki" / "backups"
+
+
 # 並べ替え・復元の前に取る Hex vocabulary のバックアップ。新しい方から KEEP_BACKUPS 個を残す
-DEFAULT_BACKUP_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "toranomaki" / "backups"
+DEFAULT_BACKUP_DIR = _default_backup_dir()
 BACKUP_PREFIX = "hex-vocabulary-"
 KEEP_BACKUPS = 3
 # Hex は vocabulary を先頭から「, 」でつないで 500 文字に収まる分だけ Whisper の前置きに使う
@@ -548,20 +565,60 @@ def _check(result: subprocess.CompletedProcess[str], what: str) -> None:
         )
 
 
-def _run(args: Sequence[str], stdin: str | None) -> subprocess.CompletedProcess[str]:
+def _run(
+    args: Sequence[str], stdin: str | None, *, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        list(args), input=stdin, capture_output=True, text=True, encoding="utf-8", check=False
+        list(args),
+        input=stdin,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        env=env,
     )
 
 
 # --- CLI ---
 
 
+def _hex_executable(hex_dir: Path, override: Path | None) -> Path:
+    if override is not None:
+        return override.expanduser().resolve()
+    if sys.platform != "darwin":
+        return hex_dir / "bin" / "hex.com"
+    on_path = shutil.which("hex")
+    if on_path:
+        return Path(on_path)
+    bundle_path = Path("Hex.app", "Contents", "MacOS", "hex")
+    for applications in (Path("/Applications"), Path.home() / "Applications"):
+        candidate = applications / bundle_path
+        if candidate.is_file():
+            return candidate
+    return Path("/Applications") / bundle_path
+
+
+def _hex_runner(hex_dir: Path, run: Runner | None) -> Runner:
+    if run is not None:
+        return run
+    if sys.platform == "darwin":
+        env = {**os.environ, "HEX_APPLICATION_SUPPORT_DIR": str(hex_dir.resolve())}
+        return partial(_run, env=env)
+    return _run
+
+
+def _add_hex_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--hex-dir", type=Path, default=_default_hex_dir(), help="Hex data directory"
+    )
+    parser.add_argument("--hex-cli", type=Path, help="path to the Hex CLI executable")
+    parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
+
+
 def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--apply", action="store_true", help="write changes (default: dry-run)")
     p.add_argument("--glossary", type=Path, help="override ~/.toranomaki/voice-glossary.yaml")
-    p.add_argument("--hex-dir", type=Path, default=HEX_DIR)
-    p.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
+    _add_hex_arguments(p)
     p.add_argument(
         "--remove-vocabulary-alias",
         action="append",
@@ -572,7 +629,7 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--vocabulary-report", action="store_true", help=argparse.SUPPRESS)
 
 
-def main(argv: Sequence[str] | None = None, run: Runner = _run) -> int:
+def main(argv: Sequence[str] | None = None, run: Runner | None = None) -> int:
     description = (__doc__ or "").partition("\n")[0]
     p = argparse.ArgumentParser(prog="toranomaki sync", description=description)
     add_arguments(p)
@@ -582,29 +639,31 @@ def main(argv: Sequence[str] | None = None, run: Runner = _run) -> int:
 def add_restore_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("backup", type=Path, help="toranomaki sync が保存した hex-vocabulary-*.json")
     p.add_argument("--apply", action="store_true", help="write changes (default: dry-run)")
-    p.add_argument("--hex-dir", type=Path, default=HEX_DIR)
-    p.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
+    _add_hex_arguments(p)
 
 
-def execute_restore(args: argparse.Namespace, run: Runner = _run) -> int:
-    hex_cli = args.hex_dir / "bin" / "hex.com"
+def execute_restore(args: argparse.Namespace, run: Runner | None = None) -> int:
+    hex_dir = args.hex_dir.expanduser()
     try:
+        runner = _hex_runner(hex_dir, run)
+        hex_cli = _hex_executable(hex_dir, args.hex_cli)
         raw = json.loads(args.backup.read_text(encoding="utf-8"))
         backup = [
             {"term": e["term"], "sounds_like": list(e.get("sounds_like") or [])}
             for e in raw["entries"]
         ]
-        current = hex_vocabulary(hex_cli, run)
+        current = hex_vocabulary(hex_cli, runner)
     except (OSError, KeyError, TypeError, ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    change = plan_hex_restore(backup, current, hex_cli, run, args.backup_dir)
+    change = plan_hex_restore(backup, current, hex_cli, runner, args.backup_dir)
     print(f"backup: {args.backup}（{len(backup)} 語）")
     return _report_and_apply([change], args.apply)
 
 
-def execute(args: argparse.Namespace, run: Runner = _run) -> int:
-    settings_path = args.hex_dir / "settings.json"
+def execute(args: argparse.Namespace, run: Runner | None = None) -> int:
+    hex_dir = args.hex_dir.expanduser()
+    settings_path = hex_dir / "settings.json"
     glossary = args.glossary
     try:
         if glossary is None:
@@ -617,8 +676,9 @@ def execute(args: argparse.Namespace, run: Runner = _run) -> int:
             print(f"skip: Hex（{settings_path} が見つからない）")
             return 0
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        hex_cli = args.hex_dir / "bin" / "hex.com"
-        ownership = VocabularyOwnership.load(args.backup_dir / "state", args.hex_dir)
+        hex_cli = _hex_executable(hex_dir, args.hex_cli)
+        runner = _hex_runner(hex_dir, run)
+        ownership = VocabularyOwnership.load(args.backup_dir / "state", hex_dir)
         removals: set[tuple[str, str]] = set()
         for item in args.remove_vocabulary_alias:
             pair = json.loads(item)
@@ -633,7 +693,7 @@ def execute(args: argparse.Namespace, run: Runner = _run) -> int:
             terms,
             settings,
             hex_cli,
-            run,
+            runner,
             args.backup_dir,
             app_modes=app_modes,
             ownership=ownership,
