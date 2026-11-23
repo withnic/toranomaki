@@ -57,6 +57,7 @@ def test_hex_plan_adds_and_fixes_without_removing() -> None:
 
     args, stdin = run.calls[0]
     assert args[1:] == ["settings", "apply", "-"]
+    assert stdin is not None
     mode = json.loads(stdin)["dictation_processing.default_mode"]
     phrases = {r["matched_phrase"]: r["output"] for r in mode["replacements"]}
     assert phrases == {
@@ -69,10 +70,10 @@ def test_hex_plan_adds_and_fixes_without_removing() -> None:
     assert mode["name"] == "Global"  # 他の項目はそのまま
 
     vocab_calls = [a[1:] for a, _ in run.calls[1:]]
-    assert ["vocabulary", "add", "prompts", "--sounds-like", "プロンプツ"] in vocab_calls
-    assert ["vocabulary", "add", "Cloud Spanner", "--sounds-like", "スパナー"] in vocab_calls
-    # context_only（一般語と衝突する読み替え）は認識寄せにも入れない
-    assert all(c[2] not in ("不要", "ローカル LLM") for c in vocab_calls)
+    assert vocab_calls == [
+        ["vocabulary", "add", "--sounds-like", "プロンプツ", "--", "prompts"],
+        ["vocabulary", "add", "--sounds-like", "スパナー", "--", "Cloud Spanner"],
+    ]
 
 
 def test_hex_plan_is_empty_when_in_sync() -> None:
@@ -98,7 +99,7 @@ def test_hex_vocabulary_skips_spellings_with_commas() -> None:
     change = plan_hex([Term("A B", ("x, y", "z"))], hex_settings(), Path("hex.com"), run)
     for action in change.actions:
         action()
-    assert run.calls[-1][0][1:] == ["vocabulary", "add", "A B", "--sounds-like", "z"]
+    assert run.calls[-1][0][1:] == ["vocabulary", "add", "--sounds-like", "z", "--", "A B"]
 
 
 def _glossary(tmp_path: Path) -> Path:

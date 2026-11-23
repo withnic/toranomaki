@@ -200,7 +200,7 @@ def _plan_hex_order(
     )
     change.actions.append(lambda: _backup_expecting(hex_cli, run, backup_dir, names))
     for name in redo:
-        args = [str(hex_cli), "vocabulary", "remove", name]
+        args = [str(hex_cli), "vocabulary", "remove", "--", name]
         change.actions.append(lambda args=args: _check(run(args, None), "vocabulary remove"))
         change.actions.append(_vocab_add(hex_cli, run, name, spellings[name]))
 
@@ -208,9 +208,10 @@ def _plan_hex_order(
 def _vocab_add(
     hex_cli: Path, run: Runner, term: str, spellings: Sequence[str]
 ) -> Callable[[], None]:
-    args = [str(hex_cli), "vocabulary", "add", term]
+    args = [str(hex_cli), "vocabulary", "add"]
     if spellings:
         args += ["--sounds-like", ",".join(spellings)]
+    args += ["--", term]
     return lambda: _check(run(args, None), "vocabulary add")
 
 
@@ -288,7 +289,7 @@ def plan_hex_restore(
     )
     change.actions.append(lambda: backup_hex_vocabulary(hex_cli, run, backup_dir))
     for e in current:
-        args = [str(hex_cli), "vocabulary", "remove", e["term"]]
+        args = [str(hex_cli), "vocabulary", "remove", "--", e["term"]]
         change.actions.append(lambda args=args: _check(run(args, None), "vocabulary remove"))
     for e in backup:
         change.actions.append(_vocab_add(hex_cli, run, e["term"], e["sounds_like"]))

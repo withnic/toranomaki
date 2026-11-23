@@ -9,6 +9,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from toranomaki.glossary import Term
 from toranomaki.main import main as toranomaki_main
 from toranomaki.sync import desired_order, plan_hex, plan_hex_restore
@@ -32,8 +34,13 @@ class FakeHex:
         if args[:2] == ["vocabulary", "list"]:
             out = json.dumps({"version": 4, "status": "vocabulary", "entries": self.entries})
         elif args[:2] == ["vocabulary", "add"]:
-            term = args[2]
-            spellings = args[4].split(",") if len(args) > 4 else []
+            *options, separator, term = args[2:]
+            assert separator == "--"
+            spellings = []
+            if options:
+                flag, value = options
+                assert flag == "--sounds-like"
+                spellings = value.split(",")
             entry = next((e for e in self.entries if e["term"] == term), None)
             if entry is None:
                 self.entries.append({"term": term, "sounds_like": spellings})
@@ -43,7 +50,9 @@ class FakeHex:
             mode = json.loads(stdin)["dictation_processing.default_mode"]
             self.replacements = mode["replacements"]
         elif args[:2] == ["vocabulary", "remove"]:
-            self.entries = [e for e in self.entries if e["term"] != args[2]]
+            separator, term = args[2:]
+            assert separator == "--"
+            self.entries = [e for e in self.entries if e["term"] != term]
         return subprocess.CompletedProcess(args, 0, out, "")
 
     def settings(self):
@@ -99,6 +108,43 @@ def test_new_term_and_pin_in_one_run(tmp_path: Path) -> None:
     terms = [*GLOSSARY, Term("E", ("e",), pin=True)]
     run_plan(hex_, terms, tmp_path)
     assert hex_.order == ["E", "A", "B", "C", "D"]
+
+
+@pytest.mark.parametrize("aliases", [(), ("アローエンピティ",)])
+def test_sync_hyphenated_term(tmp_path: Path, aliases: tuple[str, ...]) -> None:
+    hex_ = FakeHex([])
+    terms = [Term("ordinary"), Term("--allow-empty", aliases)]
+    run_plan(hex_, terms, tmp_path)
+    options = ["--sounds-like", aliases[0]] if aliases else []
+    assert ["vocabulary", "add", *options, "--", "--allow-empty"] in hex_.calls
+    assert hex_.entries == [
+        {"term": "ordinary", "sounds_like": []},
+        {"term": "--allow-empty", "sounds_like": list(aliases)},
+    ]
+    assert run_plan(hex_, terms, tmp_path).empty
+
+
+def test_reorder_and_restore_hyphenated_term(tmp_path: Path) -> None:
+    hex_ = FakeHex([("--allow-empty", ["アローエンピティ"]), ("ordinary", [])])
+    terms = [Term("--allow-empty", ("アローエンピティ",)), Term("ordinary", pin=True)]
+    run_plan(hex_, terms, tmp_path)
+    assert hex_.order == ["ordinary", "--allow-empty"]
+    assert run_plan(hex_, terms, tmp_path).empty
+    backup_path = next((tmp_path / "bk").glob("hex-vocabulary-*.json"))
+    backup = json.loads(backup_path.read_text(encoding="utf-8"))["entries"]
+    remove = ["vocabulary", "remove", "--", "--allow-empty"]
+    add = ["vocabulary", "add", "--sounds-like", "アローエンピティ", "--", "--allow-empty"]
+    index = hex_.calls.index(remove)
+    assert hex_.calls[index + 1] == add
+
+    hex_.calls.clear()
+    change = plan_hex_restore(backup, hex_.entries, Path("hex.com"), hex_, tmp_path)
+    for action in change.actions:
+        action()
+    assert remove in hex_.calls
+    assert add in hex_.calls
+    assert hex_.entries == backup
+    assert run_plan(hex_, [terms[0], Term("ordinary")], tmp_path).empty
 
 
 def test_comma_spelling_aborts_reorder(tmp_path: Path) -> None:
