@@ -107,3 +107,21 @@ def test_backup_retention_is_separate_from_hex(target: Path) -> None:
         assert main(["merge", str(source), "--target", str(target), "--apply"]) == 0
     assert len(list(directory.glob("voice-glossary-*.yaml"))) == 3
     assert hex_backup.is_file()
+
+
+def test_merge_preserves_local_alias_scopes(target: Path) -> None:
+    target.write_text(
+        "hex_modes: {Programming: [Zed]}\n"
+        "terms: [{term: Ruff, aliases: [ルフ], alias_modes: {ルフ: [Programming]}}]\n",
+        encoding="utf-8",
+    )
+    source = target.with_name("source.yaml")
+    source.write_text(
+        "terms: [{term: Ruff, aliases: [ラフ], alias_modes: {ルフ: global, ラフ: global}}]\n",
+        encoding="utf-8",
+    )
+    assert main(["merge", str(source), "--target", str(target), "--apply"]) == 0
+    result = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert result["hex_modes"] == {"Programming": ["Zed"]}
+    assert result["terms"][0]["aliases"] == ["ルフ", "ラフ"]
+    assert result["terms"][0]["alias_modes"] == {"ルフ": ["Programming"]}

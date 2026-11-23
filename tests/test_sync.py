@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 import toranomaki.sync as sync_module
-from toranomaki.glossary import Term
+from toranomaki.glossary import GlossaryError, Term, load_glossary
 from toranomaki.sync import main, plan_hex, replacement_pairs
 
 TERMS = [
@@ -26,7 +29,7 @@ class FakeRun:
         return subprocess.CompletedProcess(args, self.code, "", "err" if self.code else "")
 
 
-def hex_settings(replacements=(), vocabulary=()):
+def hex_settings(replacements=(), vocabulary=()) -> dict[str, Any]:
     return {
         "dictation_processing": {
             "default_mode": {"name": "Global", "replacements": list(replacements), "modes": []}
@@ -85,6 +88,63 @@ def test_hex_plan_is_empty_when_in_sync() -> None:
         ],
     )
     assert plan_hex(TERMS, settings, Path("hex.com"), FakeRun()).empty
+
+
+def test_sync_routes_aliases_and_removes_old_global_rule(tmp_path: Path) -> None:
+    glossary = tmp_path / "glossary.yaml"
+    glossary.write_text(
+        """hex_modes:
+  Zed: [Zed, 'Visual Studio Code']
+terms:
+  - term: Ruff
+    aliases: [ルフ, パイスルフ, ラフ]
+    context_only: true
+    alias_modes: {ルフ: [Zed], パイスルフ: [], ラフ: global}
+""",
+        encoding="utf-8",
+    )
+    terms, modes = load_glossary(glossary)
+    settings = hex_settings(
+        replacements=[
+            {"matched_phrase": "ルフ", "output": "Ruff"},
+            {"matched_phrase": "えっと", "output": ""},
+        ]
+    )
+    processing = settings["dictation_processing"]
+    processing["modes"] = [{"name": "Zed", "applications": ["Zed"], "replacements": []}]
+    run = FakeRun()
+    change = plan_hex(terms, settings, Path("hex.com"), run, tmp_path, app_modes=modes)
+    assert not list(tmp_path.glob("hex-app-modes-*.json"))
+    assert not run.calls
+    for action in change.actions:
+        action()
+    saved = next(tmp_path.glob("hex-app-modes-*.json"))
+    assert json.loads(saved.read_text(encoding="utf-8")) == processing
+    assert len(run.calls) == 1  # モードと共通置き換えを一度に適用し、vocabulary には送らない
+    payload = run.calls[0][1]
+    assert payload is not None
+    updates = json.loads(payload)
+    assert updates["dictation_processing.default_mode"]["replacements"] == [
+        {"matched_phrase": "えっと", "output": ""},
+        {"matched_phrase": "ラフ", "output": "Ruff"},
+    ]
+    assert updates["dictation_processing.modes"] == [
+        {
+            "name": "Zed",
+            "applications": ["Zed", "Visual Studio Code"],
+            "replacements": [{"matched_phrase": "ルフ", "output": "Ruff"}],
+        }
+    ]
+    for key, value in updates.items():
+        processing[key.split(".")[1]] = value
+    assert plan_hex(terms, settings, Path("hex.com"), FakeRun(), app_modes=modes).empty
+
+
+def test_sync_rejects_overlapping_app_modes() -> None:
+    settings = hex_settings()
+    settings["dictation_processing"]["modes"] = [{"name": "Manual", "applications": ["zed"]}]
+    with pytest.raises(GlossaryError, match="競合"):
+        plan_hex([], settings, Path("hex.com"), FakeRun(), app_modes={"Programming": ("Zed",)})
 
 
 def test_cli_apply_reports_hex_failure(tmp_path: Path) -> None:

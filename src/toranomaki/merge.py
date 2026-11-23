@@ -33,7 +33,7 @@ def _entries(document: Any, source: str) -> list[Any]:
     return document["terms"]
 
 
-def _parse_entry(entry: Any, source: str) -> Term:
+def _parse_entry(entry: Any, source: str, *, keep_scopes: bool = False) -> Term:
     if isinstance(entry, dict):
         aliases = entry.get("aliases", [])
         if (
@@ -49,11 +49,10 @@ def _parse_entry(entry: Any, source: str) -> Term:
             raise GlossaryError(
                 f"{source}: term / aliases / pin / context_only / note の型が不正です"
             )
-        entry = {
-            key: entry[key]
-            for key in ("term", "aliases", "context_only", "pin", "note")
-            if key in entry
-        }
+        fields = ("term", "aliases", "context_only", "pin", "note")
+        if keep_scopes:
+            fields += ("alias_modes",)
+        entry = {key: entry[key] for key in fields if key in entry}
     return parse_term(entry, source)
 
 
@@ -141,7 +140,7 @@ def _merge(entries: list[Any], incoming: list[Term], target: str) -> tuple[list[
     terms: dict[str, Term] = {}
     owners: dict[str, set[str]] = {}
     for index, entry in enumerate(entries):
-        term = _parse_entry(entry, f"{target}: terms[{index + 1}]")
+        term = _parse_entry(entry, f"{target}: terms[{index + 1}]", keep_scopes=True)
         positions.setdefault(term.term, index)
         terms.setdefault(term.term, term)
         for alias in term.aliases:
@@ -180,6 +179,7 @@ def _merge(entries: list[Any], incoming: list[Term], target: str) -> tuple[list[
                 context_only=current.context_only or term.context_only,
                 pin=current.pin,
                 note=note,
+                alias_modes=current.alias_modes,
             )
             if merged == current:
                 continue
@@ -263,7 +263,9 @@ def execute(args: argparse.Namespace) -> int:
             print("(dry-run) 反映するには --apply を付けて実行してください")
             return 0
         for index, entry in enumerate(entries):
-            entries[index] = _output_entry(_parse_entry(entry, str(target)), entry)
+            entries[index] = _output_entry(
+                _parse_entry(entry, str(target), keep_scopes=True), entry
+            )
         header = re.match(r"(?:[ \t]*(?:#[^\r\n]*)?\r?\n)*", text)
         output = (header[0] if header else "") + yaml.dump(
             document, Dumper=_GlossaryDumper, allow_unicode=True, sort_keys=False, width=100000

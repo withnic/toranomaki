@@ -8,7 +8,8 @@
   pin: true の語は vocabulary の先頭へ並べ替える
 
 context_only の語（「扶養」→「不要」など一般語と衝突するもの）は、どちらにも入れない。
-既存の項目は消さず、追加と修正だけを行う（並べ替え・復元は事前にバックアップする）。
+別名の適用先を明示した場合は、同じ置き換えを以前の適用先から解除する。
+並べ替え・復元・アプリ別の置き換え変更は事前にバックアップする。
 
 自分で作るツールは、この辞書を直接読めばよい（書き出さない）。
 """
@@ -26,7 +27,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
-from toranomaki.glossary import DEFAULT_GLOSSARY, LEGACY_GLOSSARY, GlossaryError, Term, load_terms
+from toranomaki.glossary import (
+    DEFAULT_GLOSSARY,
+    GLOBAL_SCOPE,
+    LEGACY_GLOSSARY,
+    GlossaryError,
+    Term,
+    load_glossary,
+)
 
 HEX_DIR = Path(os.environ.get("APPDATA", "")) / "hex"
 # 並べ替え・復元の前に取る Hex vocabulary のバックアップ。新しい方から KEEP_BACKUPS 個を残す
@@ -63,9 +71,7 @@ def replacement_pairs(terms: Sequence[Term]) -> list[tuple[str, str]]:
     """機械的に置き換えてよい（誤認識, 正しい語）の組。長い誤認識から順に並べる。"""
     pairs: dict[str, str] = {}
     for t in terms:
-        if t.context_only:
-            continue
-        for alias in t.aliases:
+        for alias in t.global_aliases:
             if alias and alias != t.term:
                 pairs[alias] = t.term
     return sorted(pairs.items(), key=lambda kv: len(kv[0]), reverse=True)
@@ -74,16 +80,120 @@ def replacement_pairs(terms: Sequence[Term]) -> list[tuple[str, str]]:
 # --- Hex ---
 
 
+def _scoped_rules(
+    terms: Sequence[Term], app_modes: dict[str, tuple[str, ...]]
+) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+    rules: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+    global_pairs = {
+        alias.casefold()
+        for term in terms
+        for alias in term.global_aliases
+        if alias not in dict(term.alias_modes)
+    }
+    for term in terms:
+        for alias, names in term.alias_modes:
+            key = alias.casefold()
+            value = (alias, term.term, names)
+            if key in global_pairs or (key in rules and rules[key] != value):
+                raise GlossaryError(f"別名 {alias!r} の適用先が競合しています")
+            if any(name != GLOBAL_SCOPE and name not in app_modes for name in names):
+                raise GlossaryError(f"別名 {alias!r} に未定義の Hex モードがあります")
+            rules[key] = value
+    return rules
+
+
+def _plan_app_modes(
+    change: Change,
+    default: dict[str, Any],
+    modes: list[dict[str, Any]],
+    app_modes: dict[str, tuple[str, ...]],
+    rules: dict[str, tuple[str, str, tuple[str, ...]]],
+) -> None:
+    owners: dict[str, str] = {}
+    for mode in modes:
+        if mode.get("name") not in app_modes:
+            for app in mode.get("applications") or []:
+                owners[app.casefold()] = mode.get("name", "")
+    for name, apps in app_modes.items():
+        existing = [mode for mode in modes if mode.get("name") == name]
+        if (
+            len(existing) > 1
+            or any(app.casefold() in owners for app in apps)
+            or (existing and existing[0].get("browser_hosts"))
+        ):
+            raise GlossaryError(f"Hex モード {name!r} の名前または対象アプリが競合しています")
+        for app in apps:
+            owners[app.casefold()] = name
+        if not existing:
+            mode = {
+                key: default[key]
+                for key in ("post_processing", "transformations", "speech")
+                if key in default
+            }
+            mode.update(name=name, applications=list(apps))
+            modes.append(mode)
+            change.summary.append(f"Hex モード追加: {name}（{', '.join(apps)}）")
+        else:
+            mode = existing[0]
+            if mode.get("applications") != list(apps):
+                mode["applications"] = list(apps)
+                change.summary.append(f"Hex モードの対象アプリ更新: {name}（{', '.join(apps)}）")
+        original = mode.get("replacements") or []
+        kept = []
+        present = set()
+        for entry in original:
+            key = entry["matched_phrase"].casefold()
+            if key in rules:
+                alias, term, destinations = rules[key]
+                if term != entry.get("output"):
+                    if name in destinations:
+                        raise GlossaryError(f"{name}: 別名 {alias!r} に別の置き換えが登録済みです")
+                elif name not in destinations:
+                    change.summary.append(f"{name} の置き換え解除: {alias} → {term}")
+                    continue
+                else:
+                    present.add(key)
+            kept.append(entry)
+        for key, (alias, term, destinations) in rules.items():
+            if name in destinations and key not in present:
+                kept.append({"matched_phrase": alias, "output": term})
+                change.summary.append(f"{name} の置き換え追加: {alias} → {term}")
+        if kept != original:
+            mode["replacements"] = kept
+
+
+def _backup_replacements(backup_dir: Path, processing: dict[str, Any]) -> None:
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    path = backup_dir / f"hex-app-modes-{datetime.now():%Y%m%d-%H%M%S-%f}.json"
+    with path.open("x", encoding="utf-8") as handle:
+        json.dump(processing, handle, ensure_ascii=False, indent=2)
+    print(f"  バックアップ: {path}")
+
+
 def plan_hex(
     terms: Sequence[Term],
     settings: dict[str, Any],
     hex_cli: Path,
     run: Runner,
     backup_dir: Path = DEFAULT_BACKUP_DIR,
+    *,
+    app_modes: dict[str, tuple[str, ...]] | None = None,
 ) -> Change:
     change = Change("Hex")
-    mode = dict(settings["dictation_processing"]["default_mode"])
+    processing = settings["dictation_processing"]
+    mode = dict(processing["default_mode"])
     existing = [dict(r) for r in mode.get("replacements") or []]
+    rules = _scoped_rules(terms, app_modes or {})
+    kept = []
+    for entry in existing:
+        rule = rules.get(str(entry.get("matched_phrase", "")).casefold())
+        if rule and GLOBAL_SCOPE not in rule[2] and rule[1] == entry.get("output"):
+            change.summary.append(f"共通の置き換え解除: {rule[0]} → {rule[1]}")
+        elif rule and rule[2] and rule[1] != entry.get("output"):
+            raise GlossaryError(f"共通設定の別名 {rule[0]!r} に別の置き換えが登録済みです")
+        else:
+            kept.append(entry)
+    existing = kept
     by_phrase = {r.get("matched_phrase"): r for r in existing}
     added = []
     for alias, term in replacement_pairs(terms):
@@ -96,9 +206,19 @@ def plan_hex(
                 f"replacements 修正: {alias} → {current.get('output')} を {term} に"
             )
             current["output"] = term
+    updates = {}
     if change.summary:
         mode["replacements"] = existing + added
-        payload = json.dumps({"dictation_processing.default_mode": mode}, ensure_ascii=False)
+        updates["dictation_processing.default_mode"] = mode
+    if app_modes:
+        modes = [dict(item) for item in processing.get("modes") or []]
+        _plan_app_modes(change, mode, modes, app_modes, rules)
+        if modes != (processing.get("modes") or []):
+            updates["dictation_processing.modes"] = modes
+    if updates:
+        if app_modes or rules:
+            change.actions.append(lambda: _backup_replacements(backup_dir, processing))
+        payload = json.dumps(updates, ensure_ascii=False)
         change.actions.append(
             lambda: _check(run([str(hex_cli), "settings", "apply", "-"], payload), "settings apply")
         )
@@ -110,13 +230,18 @@ def plan_hex(
         for v in settings.get("vocabulary") or []
     ]
     vocab = {v["term"]: set(v["sounds_like"]) for v in after}
+    for alias, term, scopes in rules.values():
+        if GLOBAL_SCOPE not in scopes and alias in vocab.get(term, set()):
+            change.notes.append(
+                f"共通 vocabulary に既存の認識用別名が残っています: {alias} → {term}"
+            )
     for t in terms:
-        if t.context_only:
+        if t.context_only or (t.alias_modes and not t.global_aliases):
             # 一般語と衝突する読み替え（扶養→不要 等）は Claude 向け。認識寄せに入れると逆効果
             continue
         # Hex の --sounds-like はカンマ区切りなので、カンマを含む表記は送れない
-        spellings = [a for a in t.aliases if a != t.term and "," not in a]
-        skipped = [a for a in t.aliases if "," in a]
+        spellings = [a for a in t.global_aliases if a != t.term and "," not in a]
+        skipped = [a for a in t.global_aliases if "," in a]
         missing = [a for a in spellings if a not in vocab.get(t.term, set())]
         if t.term in vocab and not missing:
             continue
@@ -369,14 +494,14 @@ def execute(args: argparse.Namespace, run: Runner = _run) -> int:
             glossary = DEFAULT_GLOSSARY
             if not glossary.exists() and LEGACY_GLOSSARY.is_file():
                 glossary = LEGACY_GLOSSARY
-        terms = load_terms(glossary)
+        terms, app_modes = load_glossary(glossary)
         print(f"glossary: {glossary}（{len(terms)} 語）")
         if not settings_path.exists():
             print(f"skip: Hex（{settings_path} が見つからない）")
             return 0
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         hex_cli = args.hex_dir / "bin" / "hex.com"
-        change = plan_hex(terms, settings, hex_cli, run, args.backup_dir)
+        change = plan_hex(terms, settings, hex_cli, run, args.backup_dir, app_modes=app_modes)
     except (GlossaryError, OSError, KeyError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

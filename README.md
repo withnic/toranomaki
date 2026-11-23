@@ -99,6 +99,28 @@ uv run toranomaki sync --apply   # 反映する
 - Hex は起動している必要があります（公式 CLI の `hex settings apply` と `hex vocabulary add` で書き込みます）。
 - Hex の Labs で `vocabulary-biasing` をオンにすると、登録語が音声認識に使われます（`hex labs on vocabulary-biasing`）。
 
+### アプリ別に文字置き換えを使う
+
+共通辞書の `hex_modes` にモード名と対象アプリを登録し、各語の `alias_modes` で別名ごとの適用先を選べます。
+Zed だけで使う場合はアプリ欄を `[Zed]` にします。VS Code も使う場合は同じモードに追加できます。
+
+```yaml
+hex_modes:
+  Programming: [Zed, "Visual Studio Code"]
+terms:
+  - term: "ruff"
+    aliases: ["ルフ", "パイスルフ"]
+    context_only: true
+    alias_modes:
+      "ルフ": [Programming]
+      "パイスルフ": []
+```
+
+- モード名のリストは、そのモードでだけ置き換える指定です。空リストは文脈でだけ読み替える指定です。文字列の `global` は全アプリで置き換える指定です。個別指定のない別名には従来どおり `context_only` が効きます。
+- Hex に同名のモードがあれば、そのモードを更新します。すでに `Zed` というモードを使っているなら、例の `Programming` を `Zed` に読み替えてください。別名のモードが同じアプリを対象にしている場合は競合として中止します。
+- `toranomaki sync` で各モードの追加や解除を確認し、`--apply` で反映します。別名の適用先を明示すると、正本と同じ置き換えを共通設定や `hex_modes` に指定した以前のモードから解除できます。解除したい別名は、明示的に `[]` にしてください。変更前の音声入力設定はバックアップします。
+- Windows でこの設定が変えるのは文字置き換えです。アプリ限定の別名は共通 vocabulary に新規追加せず、以前に登録された認識用の別名が残っていれば差分表示で知らせます。
+
 ## Web 版 Gemini などで集めた訂正を取り込む
 
 音声認識の誤りを文脈から見つけられる AI は、辞書の「先生」になれます。Web 版 Gemini や ChatGPT などで個別に集めた訂正を `toranomaki merge` で共通辞書へ統合し、`sync` で Hex に還元できます。
@@ -156,6 +178,7 @@ Hex にある既存の項目は消しません。
 
 - `terms` のリスト。各要素は文字列（`"Kubernetes"` = 語だけ）か、`term` を持つマッピング。
 - `aliases` は文字列 1 つかリスト。`context_only` / `pin` は真偽値（既定 false）。`note` は文字列。
+- `hex_modes` は Hex 用のモード名とアプリ名の対応表、`alias_modes` は別名ごとの Hex の適用先。直接読むツールが Hex の適用先を解釈できない場合、個別の適用先を持つ別名は機械的な置き換えに使わない。
 - 知らないキーは無視する（形式は後から増えることがある）。
 - **`context_only: true` の語は、機械的な置き換えにも認識寄せにも使わない。**
 - 長い誤認識から順に置き換える（「クラウドスパナー」を「スパナー」より先に）。
