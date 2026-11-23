@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     sync.add_arguments(
         commands.add_parser(
             "sync",
-            help="push ~/.claude/voice-glossary.yaml to Hex (dry-run by default)",
+            help="push the shared voice glossary to Hex (dry-run by default)",
         )
     )
     sync.add_restore_arguments(

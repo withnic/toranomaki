@@ -60,5 +60,5 @@ def test_template_glossary_is_valid_and_generic() -> None:
 
 def test_template_claude_section_imports_the_glossary() -> None:
     text = (ROOT / "templates" / "CLAUDE.voice.md").read_text(encoding="utf-8")
-    assert "@~/.claude/voice-glossary.yaml" in text
+    assert "@~/.toranomaki/voice-glossary.yaml" in text
     assert "辞書に追加" in text

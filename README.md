@@ -3,18 +3,19 @@
 [![CI](https://github.com/withnic/toranomaki/actions/workflows/ci.yml/badge.svg)](https://github.com/withnic/toranomaki/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **English summary**: Toranomaki keeps a voice-input glossary that Claude Code grows by itself.
-> When Claude reads your dictated instructions and spots a misrecognition, it records the fix in
-> `~/.claude/voice-glossary.yaml`; `toranomaki sync` then pushes those fixes to
+> **English summary**: Toranomaki keeps a shared voice-input glossary for Claude Code and Codex.
+> When either assistant spots a speech recognition error in your instructions, it records the fix in
+> `~/.toranomaki/voice-glossary.yaml`; `toranomaki sync` then pushes those fixes to
 > [Hex](https://github.com/anomalyco/hex) as replacements and vocabulary.
 > It is built for Japanese dictation, and the docs and templates are in Japanese.
 
-Claude が育てる共通の音声辞書（`~/.claude/voice-glossary.yaml`）の形式を決め、Hex へ橋渡しします。
+Claude Code と Codex が育てる共通の音声辞書（`~/.toranomaki/voice-glossary.yaml`）の形式を決め、Hex へ橋渡しします。
 録音や音声認識は持ちません（Hex に任せます）。
 
 ```text
-~/.claude/voice-glossary.yaml   ← 正本。Claude が会話中に誤認識を見つけて追記する（形式は Toranomaki が決める）
-   ├─▶ Claude Code   ~/.claude/CLAUDE.md から読み込み、誤認識を読み替える
+~/.toranomaki/voice-glossary.yaml   ← 正本。Claude Code と Codex が会話中に誤認識を見つけて追記する
+   ├─▶ Claude Code   ~/.claude/CLAUDE.md の @ 参照から読み込む
+   ├─▶ Codex        ~/.codex/AGENTS.md の指示に従って辞書ファイルを読む
    ├─▶ Hex           置き換え（replacements）と vocabulary   ← toranomaki sync（Hex は自分で管理していないので書き出す）
    └─▶ 自分のツール   この形式のまま直接読む（下の「この形式を自分のツールで読むとき」）
 ```
@@ -22,53 +23,70 @@ Claude が育てる共通の音声辞書（`~/.claude/voice-glossary.yaml`）の
 自分で管理しているツールは、辞書を直接読む方が簡単で確実です（書き出しのずれが起きず、`sync` も要らない）。
 書き出すのは、改造しない方針の Hex だけです。
 
-## 仕組み: Claude を使うほど辞書が育つ
+## 音声入力を使うほど辞書が育つ
 
-Hex のような音声入力で Claude Code に指示していると、誤認識（「プロンプツ」= prompts、「扶養」= 不要 など）が
-混ざります。この仕組みの肝は、**その読み替えを Claude 自身に辞書へ記録させ、その辞書を音声入力ツールに戻す**ことです。
+Hex のような音声入力で Claude Code や Codex に指示すると、誤認識（「プロンプツ」= prompts、「扶養」= 不要 など）が
+混ざります。アシスタントが文脈で読み替えて辞書に記録し、Toranomaki がその辞書から Hex に反映します。
 
 ```text
-話す（Hex）──▶ 誤認識まじりの文 ──▶ Claude が文脈で読み替えて作業する
+話す（Hex）──▶ 誤認識まじりの文 ──▶ Claude Code / Codex が文脈で読み替えて作業する
                                          │ 新しい誤認識なら voice-glossary.yaml に追記（「辞書に追加: X → Y」）
                                          ▼
                               toranomaki sync --apply ──▶ Hex の置き換え・認識寄せに反映
-                                                        （Claude 以外へ入力するときも直る）
+                                                        （ほかのアプリへの入力にも効く）
 ```
 
-使うほど辞書が育ち、Claude の読み替えも、Claude 以外へ入力するときの誤字も減っていきます。
-これまでの検証で分かったことは次のとおりです。
+辞書に記録した読み替えは、次の会話でも使えます。Hex に反映した置き換えは、ほかのアプリでの音声入力にも効きます。
 
-- **Claude に渡す前に LLM で清書しない**: Claude は誤認識や独特の語順を含む生の発話を正しく読めます。
+- **渡す前に LLM で清書しない**。Claude Code では誤認識や独特の語順を含む生の発話を文脈から読めました。
   一方、ローカル LLM（7b〜32b）の清書は意味を変えたり内容を足したりしました。トークンもほぼ減りません
   （発話は数百トークン、1 往復は数万）。
 - **一般語とぶつかる読み替えは機械的に置き換えない**: 「扶養」→「不要」を置き換えると、本当に「扶養」と
-  言ったときに壊れます。`context_only: true` にして、文脈が読める Claude だけに任せます。
+  言ったときに壊れます。`context_only: true` にして、アシスタントが文脈で読み替えるときにだけ使います。
 - **Hex の vocabulary だけでは誤認識は直らない**: vocabulary は認識寄せ（Labs の vocabulary biasing）と
   AI 書き直し用で、どちらもオフだと何も起きません。確実に直すには置き換え（replacements）に入れます。
 
 ## 自分の環境に導入する
 
-前提: [Hex](https://github.com/anomalyco/hex) と Claude Code を使っていること、[uv](https://docs.astral.sh/uv/) があること。
+[Hex](https://github.com/anomalyco/hex)、[uv](https://docs.astral.sh/uv/)、Claude Code または Codex を用意します。
 
-**いちばん大事なのは、`~/.claude/CLAUDE.md` に「誤認識を見つけたら辞書に追記する」という指示を入れることです。**
-辞書を育てるのは Claude なので、この指示がないと辞書は空のままで、`toranomaki sync` は何も配れません。
+### 共通辞書を用意する
 
-1. リポジトリを取得する
-   ```powershell
-   git clone https://github.com/withnic/toranomaki.git
-   cd toranomaki
-   ```
-2. 雛形を置く（既にある場合は中身を追記する）
-   ```powershell
-   copy templates\voice-glossary.yaml $HOME\.claude\voice-glossary.yaml
-   Get-Content templates\CLAUDE.voice.md | Add-Content $HOME\.claude\CLAUDE.md
-   ```
-   - `templates/CLAUDE.voice.md` が Claude への指示（読み替えて辞書に記録する）、`voice-glossary.yaml` が辞書です。
-   - 指示の末尾の `@~/.claude/voice-glossary.yaml` で、Claude は毎回辞書を読み込んでから発話を読みます。
-   - `~/.claude/CLAUDE.md` はすべてのプロジェクトで読まれるので、どこで話しても辞書が育ちます。
-3. あとは普段どおり音声で指示するだけです。Claude が誤認識に気づくと「辞書に追加: X → Y」と言って追記します。
-4. ときどき Hex へ反映します（下の「使い方」）。Hex の Labs で `vocabulary-biasing` をオンにすると、
-   正しい語の認識そのものも寄ります（`hex labs on vocabulary-biasing`）。
+Windows PowerShell でリポジトリを取得し、辞書がまだなければ雛形をコピーします。
+
+```powershell
+git clone https://github.com/withnic/toranomaki.git
+cd toranomaki
+New-Item -ItemType Directory -Force "$HOME/.toranomaki" | Out-Null
+if (-not (Test-Path "$HOME/.toranomaki/voice-glossary.yaml")) {
+    $legacyGlossary = "$HOME/.claude/voice-glossary.yaml"
+    if (Test-Path $legacyGlossary -PathType Leaf) {
+        Copy-Item $legacyGlossary "$HOME/.toranomaki/voice-glossary.yaml"
+    } else {
+        Copy-Item templates/voice-glossary.yaml "$HOME/.toranomaki/voice-glossary.yaml"
+    }
+}
+```
+
+既存ユーザーの場合、この手順で旧辞書を新しい場所へコピーします。続けて下の手順で音声入力の節を更新し、
+旧パスへの参照も差し替えてください。新しいセッションで辞書を読めることを確認したら、以後は新しいファイルに追記します。
+`sync` は新しいファイルがまだない間、旧パスを使います。`--glossary` で指定したパスは常に優先します。
+
+### 使うアシスタントに指示を入れる
+
+| 使い方 | 追記するテンプレート | 追記先 |
+|---|---|---|
+| Claude Code のみ | [CLAUDE.voice.md](templates/CLAUDE.voice.md) | `~/.claude/CLAUDE.md` |
+| Codex のみ | [AGENTS.voice.md](templates/AGENTS.voice.md) | `~/.codex/AGENTS.md` |
+| 両方使う | 上の両方 | それぞれの指示ファイル。辞書は同じ1ファイル |
+
+テンプレートの本文を追記してください。指示ファイルがなければ作成し、音声入力の節が既にあればその節を更新します。
+
+- Claude Code はテンプレート末尾の `@~/.toranomaki/voice-glossary.yaml` から辞書を読み込みます。
+- Codex はテンプレートの指示に従って辞書ファイルを開きます。カスタムの `CODEX_HOME` を使う場合はその配下に置きます。同じ場所に `AGENTS.override.md` がある場合、そちらが優先されます。 [Codex の指示ファイル](https://developers.openai.com/codex/guides/agents-md)
+- 併用する場合、どちらかが辞書に追記した語をもう一方でも使えます。辞書の編集は片方ずつ行い、両方を開いているときは、もう一方にも更新された辞書を読み直すよう伝えてください。
+
+新しいセッションを開き、「音声辞書を読んで、登録語を一つ教えて」と頼むと設定を確認できます。その後は普段どおり音声で指示してください。誤認識を新しく記録したときは「辞書に追加: X → Y」と伝えます。Hex への反映は下の「使い方」を参照してください。
 
 ## 使い方
 
@@ -79,6 +97,7 @@ uv run toranomaki sync --apply   # 反映する
 ```
 
 - Hex は起動している必要があります（公式 CLI の `hex settings apply` と `hex vocabulary add` で書き込みます）。
+- Hex の Labs で `vocabulary-biasing` をオンにすると、登録語が音声認識に使われます（`hex labs on vocabulary-biasing`）。
 
 ## 辞書の書き方
 
@@ -88,7 +107,7 @@ terms:
     aliases: ["クロードコード"]    # 実際に出てきた誤認識
   - term: "不要"
     aliases: ["扶養"]
-    context_only: true           # 一般語と衝突するので機械的に置き換えない（Claude だけが文脈で読み替える）
+    context_only: true           # 一般語と衝突するので文脈でのみ読み替える
     note: "「扶養なら〜」= 不要なら"
 ```
 
@@ -97,12 +116,12 @@ terms:
 | 通常の語の `aliases` | 置き換え（`matched_phrase` → `output`） |
 | 通常の語の `term` | vocabulary（認識寄せ） |
 | `pin: true` | vocabulary の先頭へ並べ替え（下の「優先度」） |
-| `context_only: true` の語 | 送らない（Claude だけが文脈で読み替える） |
-| `note` | 使わない（人と Claude 向けのメモ） |
+| `context_only: true` の語 | 送らない（アシスタントが文脈で読み替える） |
+| `note` | 使わない（人とアシスタント向けのメモ） |
 
 Hex にある既存の項目は消しません。
 
-反映するか聞かれて断った語には、Claude が `context_only: true` を付け、`note` に断ったことを書きます。
+反映するか聞かれて断った語には、アシスタントが `context_only: true` を付け、`note` に断ったことを書きます。
 どのツールも機械的には使わなくなり、次の `sync` でも勧められません。あとで「やっぱり反映して」と言えば外します。
 
 ### この形式を自分のツールで読むとき
@@ -112,7 +131,7 @@ Hex にある既存の項目は消しません。
 - 知らないキーは無視する（形式は後から増えることがある）。
 - **`context_only: true` の語は、機械的な置き換えにも認識寄せにも使わない。**
 - 長い誤認識から順に置き換える（「クラウドスパナー」を「スパナー」より先に）。
-- 辞書は Claude が会話中に書き換えるので、壊れた状態で保存されることがある。読む側は止まらずに、直前の内容を使い続ける。
+- 辞書はアシスタントが会話中に書き換えるので、壊れた状態で保存されることがある。読む側は止まらずに、直前の内容を使い続ける。
 
 ## 優先度（pin）と、Hex vocabulary の並べ替え
 

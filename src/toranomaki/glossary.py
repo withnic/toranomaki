@@ -1,6 +1,6 @@
 """音声辞書の形式と読み込み。
 
-正本は ``~/.claude/voice-glossary.yaml``（Claude が会話中に誤認識を見つけて育てる）。
+正本は ``~/.toranomaki/voice-glossary.yaml``（Claude Code と Codex が会話中に育てる）。
 
     terms:
       - term: "Claude Code"          # 正しい表記（意図していた語）
@@ -22,7 +22,8 @@ from typing import Any
 
 import yaml
 
-DEFAULT_GLOSSARY = Path.home() / ".claude" / "voice-glossary.yaml"
+DEFAULT_GLOSSARY = Path.home() / ".toranomaki" / "voice-glossary.yaml"
+LEGACY_GLOSSARY = Path.home() / ".claude" / "voice-glossary.yaml"
 _KEYS = {"term", "aliases", "context_only", "note", "pin"}
 
 

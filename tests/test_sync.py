@@ -4,6 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import toranomaki.sync as sync_module
 from toranomaki.glossary import Term
 from toranomaki.sync import main, plan_hex, replacement_pairs
 
@@ -92,6 +93,25 @@ def test_cli_apply_reports_hex_failure(tmp_path: Path) -> None:
     (tmp_path / "settings.json").write_text(json.dumps(hex_settings()), encoding="utf-8")
     argv = ["--glossary", str(glossary), "--hex-dir", str(tmp_path), "--apply"]
     assert main(argv, run=FakeRun(code=3)) == 1
+
+
+def test_cli_prefers_new_glossary_and_falls_back_to_legacy(tmp_path, monkeypatch, capsys) -> None:
+    new = tmp_path / "new.yaml"
+    legacy = tmp_path / "legacy.yaml"
+    monkeypatch.setattr(sync_module, "DEFAULT_GLOSSARY", new)
+    monkeypatch.setattr(sync_module, "LEGACY_GLOSSARY", legacy)
+    argv = ["--hex-dir", str(tmp_path)]
+
+    assert main(argv + ["--glossary", str(legacy)], run=FakeRun()) == 2
+    legacy.write_text("terms: []", encoding="utf-8")
+    assert main(argv, run=FakeRun()) == 0
+    assert f"glossary: {legacy}" in capsys.readouterr().out
+
+    new.write_text("terms: []", encoding="utf-8")
+    assert main(argv, run=FakeRun()) == 0
+    assert f"glossary: {new}" in capsys.readouterr().out
+    assert main(argv + ["--glossary", str(legacy)], run=FakeRun()) == 0
+    assert f"glossary: {legacy}" in capsys.readouterr().out
 
 
 def test_hex_vocabulary_skips_spellings_with_commas() -> None:

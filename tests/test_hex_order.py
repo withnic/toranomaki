@@ -21,7 +21,7 @@ class FakeHex:
 
     def __init__(self, entries) -> None:
         self.entries = [{"term": t, "sounds_like": list(s)} for t, s in entries]
-        self.replacements: list[dict] = []
+        self.replacements: list[dict[str, str]] = []
         self.calls: list[list[str]] = []
         self.fail_on: str | None = None
 

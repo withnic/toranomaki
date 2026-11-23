@@ -1,6 +1,6 @@
-"""共通の音声辞書（~/.claude/voice-glossary.yaml）を Hex へ配る（`toranomaki sync`）。
+"""共通の音声辞書（~/.toranomaki/voice-glossary.yaml）を Hex へ配る（`toranomaki sync`）。
 
-辞書は Claude が会話中に育てる唯一の正本。Hex は自分たちで管理していないアプリなので、
+辞書は Claude Code と Codex が会話中に育てる唯一の正本。Hex は自分たちで管理していないアプリなので、
 公式 CLI を通して Hex の形式へ書き出す:
 
 - replacements（機械的な置き換え）: context_only でない aliases → {"matched_phrase", "output"}
@@ -24,9 +24,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
-from toranomaki.glossary import DEFAULT_GLOSSARY, GlossaryError, Term, load_terms
+from toranomaki.glossary import DEFAULT_GLOSSARY, LEGACY_GLOSSARY, GlossaryError, Term, load_terms
 
 HEX_DIR = Path(os.environ.get("APPDATA", "")) / "hex"
 # 並べ替え・復元の前に取る Hex vocabulary のバックアップ。新しい方から KEEP_BACKUPS 個を残す
@@ -39,6 +39,11 @@ HEX_PROMPT_CHARS = 500
 HEX_PROMPT_WARN_AT = 450
 
 Runner = Callable[[Sequence[str], str | None], "subprocess.CompletedProcess[str]"]
+
+
+class VocabularyEntry(TypedDict):
+    term: str
+    sounds_like: list[str]
 
 
 @dataclass
@@ -100,7 +105,7 @@ def plan_hex(
 
     # 追加後の vocabulary の並びを Hex と同じ規則で再現する
     # （新しい語は末尾、既存の語は位置そのまま）
-    after = [
+    after: list[VocabularyEntry] = [
         {"term": v["term"], "sounds_like": list(v.get("sounds_like") or [])}
         for v in settings.get("vocabulary") or []
     ]
@@ -176,7 +181,7 @@ def desired_order(terms: Sequence[Term], names: Sequence[str]) -> list[str]:
 def _plan_hex_order(
     change: Change,
     terms: Sequence[Term],
-    entries: list[dict[str, Any]],
+    entries: list[VocabularyEntry],
     hex_cli: Path,
     run: Runner,
     backup_dir: Path,
@@ -287,7 +292,11 @@ def plan_hex_restore(
     change.summary.append(
         f"今の {len(current)} 語を消し、バックアップの {len(backup)} 語を同じ順で入れ直す"
     )
-    change.actions.append(lambda: backup_hex_vocabulary(hex_cli, run, backup_dir))
+
+    def save_backup() -> None:
+        backup_hex_vocabulary(hex_cli, run, backup_dir)
+
+    change.actions.append(save_backup)
     for e in current:
         args = [str(hex_cli), "vocabulary", "remove", "--", e["term"]]
         change.actions.append(lambda args=args: _check(run(args, None), "vocabulary remove"))
@@ -314,13 +323,14 @@ def _run(args: Sequence[str], stdin: str | None) -> subprocess.CompletedProcess[
 
 def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--apply", action="store_true", help="write changes (default: dry-run)")
-    p.add_argument("--glossary", type=Path, default=DEFAULT_GLOSSARY)
+    p.add_argument("--glossary", type=Path, help="override ~/.toranomaki/voice-glossary.yaml")
     p.add_argument("--hex-dir", type=Path, default=HEX_DIR)
     p.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
 
 
 def main(argv: Sequence[str] | None = None, run: Runner = _run) -> int:
-    p = argparse.ArgumentParser(prog="toranomaki sync", description=__doc__.splitlines()[0])
+    description = (__doc__ or "").partition("\n")[0]
+    p = argparse.ArgumentParser(prog="toranomaki sync", description=description)
     add_arguments(p)
     return execute(p.parse_args(argv), run)
 
@@ -351,9 +361,14 @@ def execute_restore(args: argparse.Namespace, run: Runner = _run) -> int:
 
 def execute(args: argparse.Namespace, run: Runner = _run) -> int:
     settings_path = args.hex_dir / "settings.json"
+    glossary = args.glossary
     try:
-        terms = load_terms(args.glossary)
-        print(f"glossary: {args.glossary}（{len(terms)} 語）")
+        if glossary is None:
+            glossary = DEFAULT_GLOSSARY
+            if not glossary.exists() and LEGACY_GLOSSARY.is_file():
+                glossary = LEGACY_GLOSSARY
+        terms = load_terms(glossary)
+        print(f"glossary: {glossary}（{len(terms)} 語）")
         if not settings_path.exists():
             print(f"skip: Hex（{settings_path} が見つからない）")
             return 0

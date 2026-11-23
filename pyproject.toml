@@ -1,7 +1,7 @@
 [project]
 name = "toranomaki"
 version = "0.2.0"
-description = "Toranomaki: the shared voice glossary that Claude grows, and its bridge to Hex"
+description = "Toranomaki: a shared voice glossary for Claude Code and Codex, with sync to Hex"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
