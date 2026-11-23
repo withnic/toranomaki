@@ -48,15 +48,28 @@ Hex のような音声入力で Claude Code や Codex に指示すると、誤�
 
 ## 自分の環境に導入する
 
-[Hex](https://github.com/anomalyco/hex)、[uv](https://docs.astral.sh/uv/)、Claude Code または Codex を用意します。
+[Git](https://git-scm.com/)、[uv](https://docs.astral.sh/uv/getting-started/installation/) を用意します。音声入力への反映には [Hex](https://github.com/anomalyco/hex) を使います。
+
+Hex への同期・復元と、設定画面からのアプリ一覧取得は Windows 向けです。YAML / Markdown の辞書取り込み（`merge`）は Hex なしで実行でき、Windows と Linux の CI でテストしています。
+
+### Windows で初回セットアップ
+
+PowerShell を開き、`uv --version` が表示されることを確認してから、リポジトリを取得します。
+
+```powershell
+uv --version
+git clone https://github.com/withnic/toranomaki.git
+cd toranomaki
+uv sync
+```
+
+すでに取得済みなら、リポジトリのフォルダーで `uv sync` を実行します。Python 3.12 以上が必要です。`uv sync` がプロジェクト用の仮想環境 `.venv` を作り、依存関係をそろえます。Windows 上でそのまま動くので、仮想マシンは不要です。
 
 ### 共通辞書を用意する
 
-Windows PowerShell でリポジトリを取得し、辞書がまだなければ雛形をコピーします。
+同じ PowerShell で、辞書がまだなければ旧辞書または雛形をコピーします。
 
 ```powershell
-git clone https://github.com/withnic/toranomaki.git
-cd toranomaki
 New-Item -ItemType Directory -Force "$HOME/.toranomaki" | Out-Null
 if (-not (Test-Path "$HOME/.toranomaki/voice-glossary.yaml")) {
     $legacyGlossary = "$HOME/.claude/voice-glossary.yaml"
@@ -73,6 +86,8 @@ if (-not (Test-Path "$HOME/.toranomaki/voice-glossary.yaml")) {
 `sync` は新しいファイルがまだない間、旧パスを使います。`--glossary` で指定したパスは常に優先します。
 
 ### 使うアシスタントに指示を入れる
+
+Claude Code や Codex に会話から辞書を育ててもらう場合は、使うアシスタントに合わせて設定します。
 
 | 使い方 | 追記するテンプレート | 追記先 |
 |---|---|---|
@@ -101,7 +116,10 @@ uv run toranomaki sync --apply   # 反映する
 
 ### アプリ別に文字置き換えを使う
 
-Windows では `uv run toranomaki configure` で設定画面を開けます。Tkinter を使える Python が必要です。
+初回セットアップと辞書の準備が済んだら、リポジトリの [Open-Toranomaki.cmd](Open-Toranomaki.cmd) をダブルクリックすると設定画面が開きます。
+PowerShell から開く場合は `uv run toranomaki configure` を使います。
+画面が開かない場合は、同じフォルダーで `uv run python -m tkinter` を実行し、Tk の確認ウィンドウが開くか確認してください。開かない場合は Tkinter を含む Python が必要です。
+Hex に同期するときは、先に Hex を起動します。
 
 1. **アプリとモード**で、モード名を入力し、スタートメニューの一覧からアプリを検索して選びます。一覧にないアプリ名は手入力できます。「モードを更新」で編集内容を取り込みます。
 2. **別名の適用先**で別名を検索し、適用先を選んで「適用先を更新」を押します。Ctrl または Shift で複数の別名やモードを選べます。「表示」で全アプリ適用を除いたり、反映を見送った別名だけに絞ったりできます。
@@ -144,6 +162,8 @@ uv run toranomaki merge gemini.md --target ./custom-glossary.yaml
 
 入力は YAML または `yaml` / `yml` コードブロックを含む Markdown です。複数入力は指定順に読み、`-` は標準入力を表します。既定のマージ先は `~/.toranomaki/voice-glossary.yaml` です。差分と衝突の警告を確認してから `--apply` を付けてもう一度実行してください。
 
+取り込み時に適用先を選ぶ場合は、`uv run toranomaki configure` の **別名の適用先 → 外部辞書を取り込む** を使います。Markdown や YAML を貼り付けるか、ファイルを選ぶと、今回追加された別名だけが一覧に出ます。指定しなかった別名は文脈限定です。適用先を選んで **辞書に保存** を押し、必要なら **Hex と同期** で反映します。
+
 正本で `context_only: true` にした語は、取り込み元で設定を外してもそのままです。Hex への反映を再開するときは、正本側の指定も見直してください。
 
 | OS | クリップボードから差分を確認するコマンド |
@@ -177,8 +197,9 @@ terms:
 
 Hex にある既存の項目は消しません。
 
-反映するか聞かれて断った語には、アシスタントが `context_only: true` を付け、`note` に断ったことを書きます。
-どのツールも機械的には使わなくなり、次の `sync` でも勧められません。あとで「やっぱり反映して」と言えば外します。
+Claude Code と Codex は辞書に別名を追記したとき、`hex_modes` の登録を見て Hex での適用先を聞きます。
+反映を見送った別名は、その別名の `alias_modes` に `[]` を指定し、`note` に「反映を断られた」と記録します。
+あとで反映したくなったら、その別名の適用先を変更できます。
 
 ### この形式を自分のツールで読むとき
 

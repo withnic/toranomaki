@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from typing import Any
 import yaml
 
 from toranomaki.glossary import DEFAULT_GLOSSARY, GLOBAL_SCOPE, GlossaryError, parse_glossary
-from toranomaki.merge import save_glossary
+from toranomaki.merge import import_for_review, save_glossary
 
 
 def run_sync(
@@ -82,6 +83,7 @@ class ScopeEditor:
             raise GlossaryError("辞書に terms のリストが必要です")
         self.document: dict[str, Any] = raw
         self.saved = deepcopy(self.document)
+        self.imported_aliases: set[tuple[str, str]] = set()
         parse_glossary(self.document, str(self.path))
 
     @property
@@ -123,6 +125,14 @@ class ScopeEditor:
         self.original = self.path.read_bytes()
         self.saved = deepcopy(self.document)
         return backup
+
+    def stage_import(self, sources: Sequence[tuple[str, str]]) -> tuple[list[str], list[str], int]:
+        draft = deepcopy(self.document)
+        changes, warnings, added = import_for_review(draft, sources, str(self.path))
+        parse_glossary(draft, str(self.path))
+        self.document = draft
+        self.imported_aliases.update(added)
+        return changes, warnings, len(added)
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

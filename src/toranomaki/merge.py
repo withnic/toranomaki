@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from toranomaki.glossary import DEFAULT_GLOSSARY, GlossaryError, Term, parse_term
+from toranomaki.glossary import DEFAULT_GLOSSARY, GLOBAL_SCOPE, GlossaryError, Term, parse_term
 from toranomaki.sync import DEFAULT_BACKUP_DIR, prune_backups
 
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
@@ -127,6 +128,13 @@ def _output_entry(term: Term, original: Any) -> Any:
         ("context_only", term.context_only),
         ("pin", term.pin),
         ("note", term.note),
+        (
+            "alias_modes",
+            {
+                alias: GLOBAL_SCOPE if modes == (GLOBAL_SCOPE,) else list(modes)
+                for alias, modes in term.alias_modes
+            },
+        ),
     ):
         if value:
             result[key] = value
@@ -135,7 +143,13 @@ def _output_entry(term: Term, original: Any) -> Any:
     return result
 
 
-def _merge(entries: list[Any], incoming: list[Term], target: str) -> tuple[list[str], list[str]]:
+def _merge(
+    entries: list[Any],
+    incoming: list[Term],
+    target: str,
+    *,
+    review_aliases: set[tuple[str, str]] | None = None,
+) -> tuple[list[str], list[str]]:
     positions: dict[str, int] = {}
     terms: dict[str, Term] = {}
     owners: dict[str, set[str]] = {}
@@ -154,7 +168,7 @@ def _merge(entries: list[Any], incoming: list[Term], target: str) -> tuple[list[
         aliases = list(current.aliases) if current else []
         added: list[str] = []
         for alias in term.aliases:
-            if alias in aliases:
+            if alias in aliases or (review_aliases is not None and alias == name):
                 continue
             conflicts = owners.get(alias, set()) - {name}
             if conflicts:
@@ -165,8 +179,14 @@ def _merge(entries: list[Any], incoming: list[Term], target: str) -> tuple[list[
             aliases.append(alias)
             added.append(alias)
             owners.setdefault(alias, set()).add(name)
-        merged = replace(term, aliases=tuple(aliases))
+        scopes = current.alias_modes if current else ()
+        if review_aliases is not None:
+            scopes += tuple((alias, ()) for alias in added)
+            review_aliases.update((name, alias) for alias in added)
+        merged = replace(term, aliases=tuple(aliases), alias_modes=scopes)
         if current is None:
+            if review_aliases is not None and not aliases:
+                merged = replace(merged, context_only=True)
             positions[name] = len(entries)
             entries.append(_output_entry(merged, None))
             changes.append(f"語を追加: {name}" + ("（pin: true）" if merged.pin else ""))
@@ -176,10 +196,9 @@ def _merge(entries: list[Any], incoming: list[Term], target: str) -> tuple[list[
                 note = f"{note} / {term.note}" if note else term.note
             merged = replace(
                 merged,
-                context_only=current.context_only or term.context_only,
+                context_only=current.context_only or (review_aliases is None and term.context_only),
                 pin=current.pin,
                 note=note,
-                alias_modes=current.alias_modes,
             )
             if merged == current:
                 continue
@@ -196,6 +215,21 @@ def _merge(entries: list[Any], incoming: list[Term], target: str) -> tuple[list[
             changes.append(f"{name}: note を更新: {merged.note}")
         terms[name] = merged
     return changes, warnings
+
+
+def import_for_review(
+    document: dict[str, Any],
+    sources: Sequence[tuple[str, str]],
+    target: str,
+) -> tuple[list[str], list[str], set[tuple[str, str]]]:
+    incoming = [
+        term
+        for source, text in sources
+        for term in _source_terms(text.removeprefix("\ufeff"), source)
+    ]
+    added: set[tuple[str, str]] = set()
+    changes, warnings = _merge(_entries(document, target), incoming, target, review_aliases=added)
+    return changes, warnings, added
 
 
 def _write(target: Path, original: bytes, text: str) -> Path:

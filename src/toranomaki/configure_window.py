@@ -7,7 +7,7 @@ import sys
 import tkinter as tk
 from pathlib import Path
 from subprocess import SubprocessError
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import yaml
 
@@ -104,9 +104,12 @@ class ScopeWindow:
         )
 
     def build_aliases(self, page: ttk.Frame) -> None:
-        ttk.Label(page, text="正しい表記・別名を検索（Ctrl または Shift で複数選択）").pack(
-            anchor="w"
+        header = ttk.Frame(page)
+        header.pack(fill="x")
+        ttk.Label(header, text="正しい表記・別名を検索（Ctrl / Shift で複数選択）").pack(
+            side="left"
         )
+        ttk.Button(header, text="外部辞書を取り込む", command=self.open_import).pack(side="right")
         filters = ttk.Frame(page)
         filters.pack(fill="x", pady=(4, 8))
         self.alias_query = tk.StringVar()
@@ -123,6 +126,7 @@ class ScopeWindow:
                 "反映を見送った別名",
                 "選択したモードだけ",
                 "全アプリに適用",
+                "今回取り込んだ別名",
             ),
             width=24,
         )
@@ -262,6 +266,7 @@ class ScopeWindow:
                     contextual_alias and "反映を断られた" in term.note,
                     not global_alias and not contextual_alias,
                     global_alias,
+                    (term.term, alias) in self.editor.imported_aliases,
                 )
                 if not matches_filter[max(0, view)]:
                     continue
@@ -360,6 +365,71 @@ class ScopeWindow:
         self.status.set(
             "辞書に保存しました。「Hex と同期」で差分を確認できます。" if backup else "変更なし"
         )
+
+    def open_import(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("外部辞書を取り込む")
+        dialog.geometry("700x460")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        panel = ttk.Frame(dialog, padding=12)
+        panel.pack(fill="both", expand=True)
+        ttk.Label(
+            panel, text="Markdown または YAML を貼り付けるか、ファイルを選択してください。"
+        ).pack(anchor="w")
+        text = tk.Text(panel, wrap="word", padx=8, pady=8)
+        text.pack(fill="both", expand=True, pady=8)
+        actions = ttk.Frame(panel)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="閉じる", command=dialog.destroy).pack(side="right")
+
+        def stage(sources: list[tuple[str, str]]) -> None:
+            try:
+                changes, warnings, added = self.editor.stage_import(sources)
+            except (GlossaryError, yaml.YAMLError) as exc:
+                messagebox.showerror("取り込めません", str(exc), parent=dialog)
+                return
+            if warnings:
+                messagebox.showwarning(
+                    "取り込み時にスキップした別名", "\n".join(warnings), parent=dialog
+                )
+            if added:
+                self.alias_table.selection_remove(*self.alias_table.selection())
+                self.scope_filter.current(6)
+                self.alias_query.set("")
+                self.scope_notice.set(
+                    f"{added} 件を取り込みました。既定は文脈のみです。"
+                    "別名を選び、適用先を更新できます。"
+                )
+            self.status.set(
+                "取り込みを編集に追加しました。「辞書に保存」で確定します。"
+                if changes
+                else "変更なし"
+            )
+            dialog.destroy()
+
+        def pick_files() -> None:
+            paths = filedialog.askopenfilenames(
+                parent=dialog,
+                title="取り込む辞書ファイル",
+                filetypes=[("辞書ファイル", "*.md *.yaml *.yml *.txt"), ("すべて", "*.*")],
+            )
+            if not paths:
+                return
+            try:
+                sources = [(path, Path(path).read_text(encoding="utf-8-sig")) for path in paths]
+            except (OSError, UnicodeError) as exc:
+                messagebox.showerror("ファイルを読めません", str(exc), parent=dialog)
+                return
+            stage(sources)
+
+        ttk.Button(actions, text="ファイルを選ぶ", command=pick_files).pack(side="left")
+        ttk.Button(
+            actions,
+            text="貼り付けた内容を取り込む",
+            command=lambda: stage([("貼り付け", text.get("1.0", "end-1c"))]),
+        ).pack(side="left", padx=8)
+        text.focus_set()
 
     def close(self) -> None:
         if not self.editor.dirty or messagebox.askokcancel(
