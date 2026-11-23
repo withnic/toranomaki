@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from toranomaki import merge, sync
+from toranomaki import configure, merge, sync
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -18,6 +18,9 @@ def main(argv: list[str] | None = None) -> int:
         prog="toranomaki", description="Toranomaki: 共通の音声辞書を Hex へ配る"
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    configure.add_arguments(
+        commands.add_parser("configure", help="open the app and alias scope editor")
+    )
     merge.add_arguments(
         commands.add_parser("merge", help="merge YAML or Markdown into the glossary")
     )
@@ -34,6 +37,13 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     args = parser.parse_args(argv)
+    if args.command == "configure":
+        try:
+            from toranomaki import configure_window
+        except ImportError:
+            print("error: 設定画面には Tkinter を使える Python が必要です", file=sys.stderr)
+            return 2
+        return configure_window.execute(args.target)
     if args.command == "merge":
         return merge.execute(args)
     if args.command == "sync":

@@ -90,6 +90,17 @@ def test_hex_plan_is_empty_when_in_sync() -> None:
     assert plan_hex(TERMS, settings, Path("hex.com"), FakeRun()).empty
 
 
+def test_sync_reads_mixed_hex_vocabulary_formats() -> None:
+    settings = hex_settings(
+        vocabulary=["Rust", {"term": "Python", "sounds_like": ["パイソン"]}, {"term": "Go"}]
+    )
+    run = FakeRun()
+    change = plan_hex([Term("Rust"), Term("Go")], settings, Path("hex.com"), run)
+    assert change.empty
+    assert "3/3" in change.notes[0]
+    assert not run.calls
+
+
 def test_sync_routes_aliases_and_removes_old_global_rule(tmp_path: Path) -> None:
     glossary = tmp_path / "glossary.yaml"
     glossary.write_text(

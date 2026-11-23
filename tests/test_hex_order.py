@@ -13,7 +13,7 @@ import pytest
 
 from toranomaki.glossary import Term
 from toranomaki.main import main as toranomaki_main
-from toranomaki.sync import desired_order, plan_hex, plan_hex_restore
+from toranomaki.sync import VocabularyOwnership, desired_order, plan_hex, plan_hex_restore
 
 
 class FakeHex:
@@ -22,6 +22,7 @@ class FakeHex:
     def __init__(self, entries) -> None:
         self.entries = [{"term": t, "sounds_like": list(s)} for t, s in entries]
         self.replacements: list[dict[str, str]] = []
+        self.modes: list[dict[str, object]] = []
         self.calls: list[list[str]] = []
         self.fail_on: str | None = None
 
@@ -47,8 +48,11 @@ class FakeHex:
             else:
                 entry["sounds_like"] += [s for s in spellings if s not in entry["sounds_like"]]
         elif args[:2] == ["settings", "apply"]:
-            mode = json.loads(stdin)["dictation_processing.default_mode"]
-            self.replacements = mode["replacements"]
+            update = json.loads(stdin)
+            if "dictation_processing.default_mode" in update:
+                self.replacements = update["dictation_processing.default_mode"]["replacements"]
+            if "dictation_processing.modes" in update:
+                self.modes = update["dictation_processing.modes"]
         elif args[:2] == ["vocabulary", "remove"]:
             separator, term = args[2:]
             assert separator == "--"
@@ -57,7 +61,10 @@ class FakeHex:
 
     def settings(self):
         return {
-            "dictation_processing": {"default_mode": {"replacements": list(self.replacements)}},
+            "dictation_processing": {
+                "default_mode": {"replacements": list(self.replacements)},
+                "modes": self.modes,
+            },
             "vocabulary": json.loads(json.dumps(self.entries)),
         }
 
@@ -108,6 +115,62 @@ def test_new_term_and_pin_in_one_run(tmp_path: Path) -> None:
     terms = [*GLOSSARY, Term("E", ("e",), pin=True)]
     run_plan(hex_, terms, tmp_path)
     assert hex_.order == ["E", "A", "B", "C", "D"]
+
+
+def test_scoping_removes_only_owned_or_selected_aliases(tmp_path: Path) -> None:
+    hex_ = FakeHex([("Ruff", ["手動", "維持"]), ("Other", ["残す"])])
+    ownership = VocabularyOwnership.load(tmp_path / "state", tmp_path / "hex")
+    binary = Path("hex.com")
+    change = plan_hex(
+        [Term("Ruff", ("新規", "手動"))],
+        hex_.settings(),
+        binary,
+        hex_,
+        tmp_path,
+        ownership=ownership,
+    )
+    for action in change.actions:
+        action()
+    ownership = VocabularyOwnership.load(tmp_path / "state", tmp_path / "hex")
+    assert ownership.aliases == {("Ruff", "新規")}
+    terms = [
+        Term(
+            "Ruff",
+            ("新規", "手動"),
+            context_only=True,
+            alias_modes=(("新規", ("Work",)), ("手動", ("Work",))),
+        )
+    ]
+    modes = {"Work": ("Zed",)}
+    change = plan_hex(
+        terms, hex_.settings(), binary, hex_, tmp_path, app_modes=modes, ownership=ownership
+    )
+    assert change.untracked_aliases == [("Ruff", "手動")]
+    for action in change.actions:
+        action()
+    assert hex_.entries == [
+        {"term": "Ruff", "sounds_like": ["手動", "維持"]},
+        {"term": "Other", "sounds_like": ["残す"]},
+    ]
+    assert ownership.aliases == set()
+    change = plan_hex(
+        terms,
+        hex_.settings(),
+        binary,
+        hex_,
+        tmp_path,
+        app_modes=modes,
+        ownership=ownership,
+        remove_aliases={("Ruff", "手動")},
+    )
+    for action in change.actions:
+        action()
+    assert hex_.entries[0] == {"term": "Ruff", "sounds_like": ["維持"]}
+    assert hex_.order == ["Ruff", "Other"]
+    assert len(list(tmp_path.glob("hex-vocabulary-*.json"))) == 2
+    assert not plan_hex(
+        terms, hex_.settings(), binary, hex_, tmp_path, app_modes=modes, ownership=ownership
+    ).untracked_aliases
 
 
 @pytest.mark.parametrize("aliases", [(), ("アローエンピティ",)])

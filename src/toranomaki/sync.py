@@ -24,7 +24,9 @@ import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any, TypedDict
 
 from toranomaki.glossary import (
@@ -54,6 +56,23 @@ class VocabularyEntry(TypedDict):
     sounds_like: list[str]
 
 
+def _vocabulary_entry(value: object) -> VocabularyEntry:
+    if isinstance(value, str):
+        return {"term": value, "sounds_like": []}
+    if isinstance(value, dict):
+        term: object = value.get("term")
+        aliases: object = value.get("sounds_like")
+        if isinstance(term, str) and aliases is None:
+            return {"term": term, "sounds_like": []}
+        if (
+            isinstance(term, str)
+            and isinstance(aliases, list)
+            and all(isinstance(alias, str) for alias in aliases)
+        ):
+            return {"term": term, "sounds_like": list(aliases)}
+    raise GlossaryError("Hex vocabulary に不正な項目があります")
+
+
 @dataclass
 class Change:
     target: str
@@ -61,10 +80,51 @@ class Change:
     actions: list[Callable[[], None]] = field(default_factory=list)
     # 変更には数えない情報（枠の使用量など）。変更がなくても表示する
     notes: list[str] = field(default_factory=list)
+    untracked_aliases: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def empty(self) -> bool:
         return not self.summary
+
+
+@dataclass
+class VocabularyOwnership:
+    path: Path
+    aliases: set[tuple[str, str]] = field(default_factory=set)
+
+    @classmethod
+    def load(cls, state_dir: Path, hex_dir: Path) -> VocabularyOwnership:
+        key = sha256(str(hex_dir.resolve()).encode("utf-8")).hexdigest()[:20]
+        path = state_dir / f"hex-vocabulary-ownership-{key}.json"
+        if not path.exists():
+            return cls(path)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, list) or any(
+            not isinstance(pair, list)
+            or len(pair) != 2
+            or not all(isinstance(value, str) for value in pair)
+            for pair in raw
+        ):
+            raise GlossaryError(f"{path}: 認識用別名の登録元データが不正です")
+        return cls(path, {(term, alias) for term, alias in raw})
+
+    def update(self, *, added: set[tuple[str, str]], removed: set[tuple[str, str]]) -> None:
+        current = self.aliases.union(added).difference(removed)
+        if current == self.aliases:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        pending: Path | None = None
+        try:
+            with NamedTemporaryFile(
+                dir=self.path.parent, delete=False, mode="w", encoding="utf-8"
+            ) as handle:
+                pending = Path(handle.name)
+                json.dump(sorted(current), handle, ensure_ascii=False)
+            pending.replace(self.path)
+        finally:
+            if pending is not None:
+                pending.unlink(missing_ok=True)
+        self.aliases = current
 
 
 def replacement_pairs(terms: Sequence[Term]) -> list[tuple[str, str]]:
@@ -178,6 +238,8 @@ def plan_hex(
     backup_dir: Path = DEFAULT_BACKUP_DIR,
     *,
     app_modes: dict[str, tuple[str, ...]] | None = None,
+    ownership: VocabularyOwnership | None = None,
+    remove_aliases: set[tuple[str, str]] | None = None,
 ) -> Change:
     change = Change("Hex")
     processing = settings["dictation_processing"]
@@ -225,16 +287,22 @@ def plan_hex(
 
     # 追加後の vocabulary の並びを Hex と同じ規則で再現する
     # （新しい語は末尾、既存の語は位置そのまま）
-    after: list[VocabularyEntry] = [
-        {"term": v["term"], "sounds_like": list(v.get("sounds_like") or [])}
-        for v in settings.get("vocabulary") or []
-    ]
+    after = [_vocabulary_entry(value) for value in settings.get("vocabulary") or []]
     vocab = {v["term"]: set(v["sounds_like"]) for v in after}
-    for alias, term, scopes in rules.values():
-        if GLOBAL_SCOPE not in scopes and alias in vocab.get(term, set()):
-            change.notes.append(
-                f"共通 vocabulary に既存の認識用別名が残っています: {alias} → {term}"
-            )
+    affected = {
+        (term.term, alias)
+        for term in terms
+        for alias in term.aliases
+        if alias in vocab.get(term.term, set()) and alias not in term.global_aliases
+    }
+    requested = remove_aliases or set()
+    if requested - affected:
+        raise GlossaryError("指定した認識用別名の適用先が変わりました。同期を開き直してください")
+    tracked = ownership.aliases if ownership else set()
+    removals = affected & (tracked | requested)
+    change.untracked_aliases = sorted(affected - tracked)
+    for term, alias in sorted(affected - removals):
+        change.notes.append(f"共通 vocabulary に既存の認識用別名が残っています: {alias} → {term}")
     for t in terms:
         if t.context_only or (t.alias_modes and not t.global_aliases):
             # 一般語と衝突する読み替え（扶養→不要 等）は Claude 向け。認識寄せに入れると逆効果
@@ -250,16 +318,33 @@ def plan_hex(
         if skipped:
             line += f" ※カンマを含むため送らない: {skipped}"
         change.summary.append(line)
-        change.actions.append(_vocab_add(hex_cli, run, t.term, missing))
+        add = _vocab_add(hex_cli, run, t.term, missing)
+        if ownership and missing:
+            added_aliases = {(t.term, alias) for alias in missing}
+            change.actions.append(_add_owned_aliases(add, ownership, added_aliases))
+        else:
+            change.actions.append(add)
         entry = next((v for v in after if v["term"] == t.term), None)
         if entry is None:
             after.append({"term": t.term, "sounds_like": missing})
         else:
             entry["sounds_like"] += missing
 
-    _plan_hex_order(change, terms, after, hex_cli, run, backup_dir)
+    _plan_hex_order(change, terms, after, hex_cli, run, backup_dir, removals=removals)
+    if removals and ownership:
+        change.actions.append(lambda: ownership.update(added=set(), removed=removals))
     change.notes += hex_prompt_notes(desired_order(terms, [e["term"] for e in after]))
     return change
+
+
+def _add_owned_aliases(
+    add: Callable[[], None], ownership: VocabularyOwnership, aliases: set[tuple[str, str]]
+) -> Callable[[], None]:
+    def apply() -> None:
+        add()
+        ownership.update(added=aliases, removed=set())
+
+    return apply
 
 
 def hex_prompt_usage(names: Sequence[str]) -> tuple[int, int]:
@@ -310,25 +395,43 @@ def _plan_hex_order(
     hex_cli: Path,
     run: Runner,
     backup_dir: Path,
+    *,
+    removals: set[tuple[str, str]],
 ) -> None:
     names = [e["term"] for e in entries]
     desired = desired_order(terms, names)
-    prefix = next((i for i, (a, b) in enumerate(zip(names, desired, strict=True)) if a != b), None)
+    edited = {term for term, _ in removals}
+    prefix = next(
+        (i for i, (a, b) in enumerate(zip(names, desired, strict=True)) if a != b or a in edited),
+        None,
+    )
     if prefix is None:
         return
-    spellings = {e["term"]: e["sounds_like"] for e in entries}
+    spellings = {
+        e["term"]: [s for s in e["sounds_like"] if (e["term"], s) not in removals] for e in entries
+    }
     # 並べ替えは「消してすぐ入れ直す」と末尾に回ることを使う。
     # ずれ始めた位置から後ろを、望む順に入れ直す
     redo = desired[prefix:]
     broken = [n for n in redo if any("," in s for s in spellings[n])]
     if broken:
+        if removals:
+            raise GlossaryError(
+                f"共通 vocabulary を変更できません。カンマを含む表記があります: {broken}"
+            )
         change.summary.append(f"vocabulary 並べ替えを中止: カンマを含む表記は入れ直せない {broken}")
         return
-    change.summary.append(
-        f"vocabulary 並べ替え: pin した語 {pinned_terms(terms, names)} を先頭へ"
-        f"（{len(redo)} 語を入れ直し、事前にバックアップ）"
-    )
-    change.actions.append(lambda: _backup_expecting(hex_cli, run, backup_dir, names))
+    if removals:
+        for term, alias in sorted(removals):
+            change.summary.append(f"共通 vocabulary の認識用別名を解除: {alias} → {term}")
+        change.summary.append(f"vocabulary を事前にバックアップし、{len(redo)} 語を入れ直す")
+        change.actions.append(lambda: _backup_expecting(hex_cli, run, backup_dir, names, entries))
+    else:
+        change.summary.append(
+            f"vocabulary 並べ替え: pin した語 {pinned_terms(terms, names)} を先頭へ"
+            f"（{len(redo)} 語を入れ直し、事前にバックアップ）"
+        )
+        change.actions.append(lambda: _backup_expecting(hex_cli, run, backup_dir, names))
     for name in redo:
         args = [str(hex_cli), "vocabulary", "remove", "--", name]
         change.actions.append(lambda args=args: _check(run(args, None), "vocabulary remove"))
@@ -389,11 +492,17 @@ def prune_backups(
     return old
 
 
-def _backup_expecting(hex_cli: Path, run: Runner, backup_dir: Path, names: Sequence[str]) -> None:
+def _backup_expecting(
+    hex_cli: Path,
+    run: Runner,
+    backup_dir: Path,
+    names: Sequence[str],
+    expected: list[VocabularyEntry] | None = None,
+) -> None:
     """バックアップを取り、Hex の実際の並びが予測どおりかを確かめる（違えば並べ替えを中止）。"""
     path = backup_hex_vocabulary(hex_cli, run, backup_dir)
-    actual = [e["term"] for e in json.loads(path.read_text(encoding="utf-8"))["entries"]]
-    if actual != list(names):
+    actual = json.loads(path.read_text(encoding="utf-8"))["entries"]
+    if [e["term"] for e in actual] != list(names) or expected is not None and actual != expected:
         raise RuntimeError(
             "Hex の vocabulary が予測した並びと違うため、並べ替えを中止しました"
             "（何も消していません）。"
@@ -453,6 +562,14 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--glossary", type=Path, help="override ~/.toranomaki/voice-glossary.yaml")
     p.add_argument("--hex-dir", type=Path, default=HEX_DIR)
     p.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
+    p.add_argument(
+        "--remove-vocabulary-alias",
+        action="append",
+        default=[],
+        metavar='["TERM","ALIAS"]',
+        help="remove a scoped, already registered recognition alias",
+    )
+    p.add_argument("--vocabulary-report", action="store_true", help=argparse.SUPPRESS)
 
 
 def main(argv: Sequence[str] | None = None, run: Runner = _run) -> int:
@@ -501,10 +618,32 @@ def execute(args: argparse.Namespace, run: Runner = _run) -> int:
             return 0
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         hex_cli = args.hex_dir / "bin" / "hex.com"
-        change = plan_hex(terms, settings, hex_cli, run, args.backup_dir, app_modes=app_modes)
+        ownership = VocabularyOwnership.load(args.backup_dir / "state", args.hex_dir)
+        removals: set[tuple[str, str]] = set()
+        for item in args.remove_vocabulary_alias:
+            pair = json.loads(item)
+            if (
+                not isinstance(pair, list)
+                or len(pair) != 2
+                or not all(isinstance(value, str) for value in pair)
+            ):
+                raise GlossaryError("--remove-vocabulary-alias には [語, 別名] を指定してください")
+            removals.add((pair[0], pair[1]))
+        change = plan_hex(
+            terms,
+            settings,
+            hex_cli,
+            run,
+            args.backup_dir,
+            app_modes=app_modes,
+            ownership=ownership,
+            remove_aliases=removals,
+        )
     except (GlossaryError, OSError, KeyError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    if args.vocabulary_report:
+        print("vocabulary-candidates: " + json.dumps(change.untracked_aliases, ensure_ascii=False))
     return _report_and_apply([change], args.apply)
 
 

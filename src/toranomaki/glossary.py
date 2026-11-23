@@ -104,6 +104,11 @@ def load_glossary(path: Path) -> tuple[list[Term], dict[str, tuple[str, ...]]]:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:
         raise GlossaryError(f"{path}: invalid YAML: {exc}") from exc
+    return parse_glossary(raw, str(path))
+
+
+def parse_glossary(raw: Any, source: str) -> tuple[list[Term], dict[str, tuple[str, ...]]]:
+    path = source
     if not isinstance(raw, dict) or not isinstance(raw.get("terms") or [], list):
         raise GlossaryError(f"{path}: expected a mapping with a 'terms' list")
     terms = [parse_term(item, str(path)) for item in raw.get("terms") or []]

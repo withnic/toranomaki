@@ -219,6 +219,28 @@ def _write(target: Path, original: bytes, text: str) -> Path:
     return backup
 
 
+def save_glossary(target: Path, original: bytes, document: dict[str, Any]) -> Path:
+    """辞書を整形し、バックアップを取ってから置き換える。"""
+    entries = _entries(document, str(target))
+    document = {
+        **document,
+        "terms": [
+            _output_entry(_parse_entry(entry, str(target), keep_scopes=True), entry)
+            for entry in entries
+        ],
+    }
+    header = re.match(r"(?:[ \t]*(?:#[^\r\n]*)?\r?\n)*", original.decode("utf-8-sig"))
+    output = (header[0] if header else "") + yaml.dump(
+        document, Dumper=_GlossaryDumper, allow_unicode=True, sort_keys=False, width=100000
+    )
+    backup = _write(target, original, output)
+    try:
+        prune_backups(DEFAULT_BACKUP_DIR, pattern=f"{BACKUP_PREFIX}*.yaml")
+    except OSError as exc:
+        print(f"警告: 古いバックアップを整理できません: {exc}", file=sys.stderr)
+    return backup
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("sources", nargs="+", help="YAML / Markdown files, or - for stdin")
     parser.add_argument("--apply", action="store_true", help="write changes (default: dry-run)")
@@ -262,21 +284,9 @@ def execute(args: argparse.Namespace) -> int:
         if not args.apply:
             print("(dry-run) 反映するには --apply を付けて実行してください")
             return 0
-        for index, entry in enumerate(entries):
-            entries[index] = _output_entry(
-                _parse_entry(entry, str(target), keep_scopes=True), entry
-            )
-        header = re.match(r"(?:[ \t]*(?:#[^\r\n]*)?\r?\n)*", text)
-        output = (header[0] if header else "") + yaml.dump(
-            document, Dumper=_GlossaryDumper, allow_unicode=True, sort_keys=False, width=100000
-        )
-        backup = _write(target, original, output)
+        backup = save_glossary(target, original, document)
     except (GlossaryError, OSError, UnicodeError, yaml.YAMLError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(f"バックアップ: {backup}")
-    try:
-        prune_backups(DEFAULT_BACKUP_DIR, pattern=f"{BACKUP_PREFIX}*.yaml")
-    except OSError as exc:
-        print(f"警告: 古いバックアップを整理できません: {exc}", file=sys.stderr)
     return 0
