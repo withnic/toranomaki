@@ -7,3 +7,4 @@ __pycache__/
 # 旧・録音アプリ時代のローカルデータ（個人の発話・評価結果）。公開しない
 /config.yaml
 /prompts/
+tickets/
