@@ -1,3 +1,5 @@
+![Toranomaki](./toranomaki.jpg)
+
 # Toranomaki
 
 [![CI](https://github.com/withnic/toranomaki/actions/workflows/ci.yml/badge.svg)](https://github.com/withnic/toranomaki/actions/workflows/ci.yml)
